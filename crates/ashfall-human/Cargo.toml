@@ -1,0 +1,11 @@
+[package]
+name = "ashfall-human"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "ashfall_human"
+path = "src/lib.rs"
+
+[dependencies]
+ashfall-core = { path = "../ashfall-core" }

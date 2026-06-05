@@ -1,0 +1,12 @@
+[package]
+name = "ashfall-voice"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "ashfall_voice"
+path = "src/lib.rs"
+
+[dependencies]
+ashfall-core = { path = "../ashfall-core" }
+rodio = "0.22.2"

@@ -1,0 +1,13 @@
+[package]
+name = "ashfall-tools"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "ashfall_tools"
+path = "src/lib.rs"
+
+[dependencies]
+ashfall-core = { path = "../ashfall-core" }
+ashfall-voice = { path = "../ashfall-voice" }
+ashfall-worldgen = { path = "../ashfall-worldgen" }

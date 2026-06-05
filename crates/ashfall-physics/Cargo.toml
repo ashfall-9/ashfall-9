@@ -1,0 +1,11 @@
+[package]
+name = "ashfall-physics"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "ashfall_physics"
+path = "src/lib.rs"
+
+[dependencies]
+ashfall-core = { path = "../ashfall-core" }
