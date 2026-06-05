@@ -2267,9 +2267,9 @@ mod tests {
                 && edge.route_priority > 0.0
         }));
         assert!(vertices.iter().any(|vertex| {
-            vertex.color[0] == 1.0
-                && vertex.color[1] == 0.18
-                && vertex.color[2] == 0.76
+            vertex.color[0] == 0.82
+                && vertex.color[1] == 0.24
+                && vertex.color[2] == 0.56
                 && vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
         }));
         assert!(vertices.iter().any(|vertex| {
@@ -3048,7 +3048,7 @@ mod tests {
                 >= 2
         }));
         assert!(geometry.vertices.iter().any(|vertex| {
-            vertex.color == [0.35, 0.9, 1.0, 1.0]
+            vertex.color == [0.34, 0.54, 0.58, 0.46]
                 && vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
         }));
         assert!(geometry.vertices.iter().any(|vertex| {
@@ -3157,7 +3157,7 @@ mod tests {
             geometry
                 .vertices
                 .iter()
-                .any(|vertex| vertex.color == [0.08, 0.92, 1.0, 1.0])
+                .any(|vertex| vertex.color == [0.22, 0.62, 0.66, 0.62])
         );
         let emotion = &agent.emotional_state;
         let alert =

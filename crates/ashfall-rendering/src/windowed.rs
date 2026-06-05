@@ -747,8 +747,8 @@ pub fn window_atmosphere_for_alley(
     } else {
         [0.78, 0.84, 0.92]
     };
-    let daylight = [0.42, 0.5, 0.6];
-    let neon_influence = light_energy * 0.18;
+    let daylight = [0.48, 0.56, 0.66];
+    let neon_influence = light_energy * 0.1;
     let fog_color = [
         daylight[0] + light_tint[0] * neon_influence + event_pressure * 0.035,
         daylight[1] + light_tint[1] * (neon_influence * 0.62 + pulse * 0.006),
@@ -757,8 +757,8 @@ pub fn window_atmosphere_for_alley(
     WindowAtmosphere::new(
         fog_color,
         0.01 + pulse * 0.004 + event_pressure * 0.006,
-        1.24 + light_energy * 0.08 + event_pressure * 0.05,
-        0.12 + light_energy * 0.14 + event_pressure * 0.08,
+        1.22 + light_energy * 0.05 + event_pressure * 0.04,
+        0.075 + light_energy * 0.09 + event_pressure * 0.055,
     )
 }
 
@@ -2330,11 +2330,68 @@ fn window_streaming_cell_state_color(state: WindowCityStreamingCellState) -> [f3
 }
 
 fn window_generated_city_detail_budget(chunk: WindowGeneratedCityChunkVisual) -> usize {
-    match chunk.streaming_state {
+    let base = match chunk.streaming_state {
         WindowCityStreamingCellState::Unloaded | WindowCityStreamingCellState::SummaryLoaded => 0,
         WindowCityStreamingCellState::GameplayLoaded => 2,
-        WindowCityStreamingCellState::RenderHighDetail => 4,
-        WindowCityStreamingCellState::HeroLoaded => 5,
+        WindowCityStreamingCellState::RenderHighDetail => 3,
+        WindowCityStreamingCellState::HeroLoaded => 4,
+    };
+    if base == 0 {
+        return 0;
+    }
+
+    let scale = window_generated_city_lod_scale(chunk);
+    let consequence_bonus =
+        usize::from(scale > 0.72 && (chunk.pollution + chunk.crime_pressure) > 0.72);
+    ((base as f32 * scale).ceil() as usize + consequence_bonus).clamp(1, 4)
+}
+
+fn window_generated_city_camera_distance(chunk: WindowGeneratedCityChunkVisual) -> f32 {
+    let [x, y] = chunk.center_meters;
+    (x.mul_add(x, y * y)).sqrt()
+}
+
+fn window_generated_city_lod_scale(chunk: WindowGeneratedCityChunkVisual) -> f32 {
+    let distance = window_generated_city_camera_distance(chunk);
+    let distance_scale = if distance <= 18.0 {
+        1.0
+    } else if distance <= 42.0 {
+        1.0 - ((distance - 18.0) / 24.0) * 0.42
+    } else {
+        0.42
+    };
+    let streaming_scale = match chunk.streaming_state {
+        WindowCityStreamingCellState::Unloaded | WindowCityStreamingCellState::SummaryLoaded => 0.0,
+        WindowCityStreamingCellState::GameplayLoaded => 0.55,
+        WindowCityStreamingCellState::RenderHighDetail => 0.82,
+        WindowCityStreamingCellState::HeroLoaded => 1.0,
+    };
+    distance_scale.min(streaming_scale).clamp(0.0, 1.0)
+}
+
+fn window_generated_city_major_segments(chunk: WindowGeneratedCityChunkVisual) -> usize {
+    if window_generated_city_detail_budget(chunk) >= 4 {
+        12
+    } else {
+        9
+    }
+}
+
+fn window_generated_city_minor_segments(chunk: WindowGeneratedCityChunkVisual) -> usize {
+    if window_generated_city_detail_budget(chunk) >= 4 {
+        10
+    } else {
+        7
+    }
+}
+
+fn window_generated_city_ellipsoid_segments(
+    chunk: WindowGeneratedCityChunkVisual,
+) -> (usize, usize) {
+    if window_generated_city_detail_budget(chunk) >= 4 {
+        (5, 12)
+    } else {
+        (4, 8)
     }
 }
 
@@ -2355,9 +2412,11 @@ fn window_generated_city_crowd_visual_count(chunk: WindowGeneratedCityChunkVisua
         return 0;
     }
 
-    let expected = (chunk.expected_background_crowd_count as usize / 8).min(10);
+    let expected = (chunk.expected_background_crowd_count as usize / 10).min(8);
     let rule_bonus = chunk.crowd_spawn_rule_count.min(4) as usize;
-    (expected + rule_bonus).clamp(2, 14)
+    let scaled =
+        ((expected + rule_bonus) as f32 * window_generated_city_lod_scale(chunk)).ceil() as usize;
+    scaled.clamp(1, 9)
 }
 
 fn window_generated_city_traffic_visual_count(chunk: WindowGeneratedCityChunkVisual) -> usize {
@@ -2365,9 +2424,27 @@ fn window_generated_city_traffic_visual_count(chunk: WindowGeneratedCityChunkVis
         return 0;
     }
 
-    let expected = (chunk.expected_vehicle_or_transit_count as usize / 3).min(4);
+    let expected = (chunk.expected_vehicle_or_transit_count as usize / 4).min(4);
     let rule_bonus = chunk.traffic_rule_count.min(2) as usize;
-    (expected + rule_bonus).clamp(1, 6)
+    let scaled =
+        ((expected + rule_bonus) as f32 * window_generated_city_lod_scale(chunk)).ceil() as usize;
+    scaled.clamp(1, 4)
+}
+
+fn window_city_material_should_spend_micro_detail(
+    placement: WindowCityMaterialPlacementVisual,
+) -> bool {
+    let [x, y, _] = placement.center_meters;
+    let distance = (x.mul_add(x, y * y)).sqrt();
+    if distance <= 18.0 {
+        return true;
+    }
+
+    let consequence = placement
+        .damage
+        .max(placement.pollution)
+        .max(placement.wetness);
+    placement.importance > 0.35 || consequence > 0.46 || distance <= 32.0 && consequence > 0.24
 }
 
 fn window_generated_city_crowd_body_color(
@@ -2876,37 +2953,37 @@ fn window_generated_city_window_color(
     chunk: WindowGeneratedCityChunkVisual,
     flicker: f32,
 ) -> [f32; 4] {
-    let activity = (0.36 + flicker * 0.22 + chunk.surveillance_level * 0.16).clamp(0.0, 1.0);
+    let activity = (0.28 + flicker * 0.18 + chunk.surveillance_level * 0.1).clamp(0.0, 1.0);
     match chunk.district_kind {
         WindowCityDistrictVisualKind::CorporateCore => [
-            0.45 + activity * 0.32,
-            0.66 + activity * 0.2,
-            1.0,
-            0.24 + activity * 0.34,
+            0.5 + activity * 0.18,
+            0.58 + activity * 0.16,
+            0.68 + activity * 0.2,
+            0.16 + activity * 0.24,
         ],
         WindowCityDistrictVisualKind::RainAlleySlum => [
-            0.1 + activity * 0.18,
-            0.28 + activity * 0.3,
-            0.34 + chunk.pollution * 0.1,
-            0.22 + activity * 0.26,
+            0.18 + activity * 0.16,
+            0.22 + activity * 0.2,
+            0.22 + chunk.pollution * 0.08,
+            0.15 + activity * 0.2,
         ],
         WindowCityDistrictVisualKind::IndustrialDock => [
-            1.0,
-            0.48 + activity * 0.16,
-            0.12 + chunk.pollution * 0.08,
-            0.24 + activity * 0.34,
+            0.82,
+            0.48 + activity * 0.12,
+            0.24 + chunk.pollution * 0.06,
+            0.16 + activity * 0.24,
         ],
         WindowCityDistrictVisualKind::BlackMarket => [
-            0.88 + activity * 0.12,
-            0.14 + activity * 0.22,
-            0.68 + activity * 0.2,
-            0.3 + activity * 0.36,
+            0.72 + activity * 0.12,
+            0.2 + activity * 0.16,
+            0.46 + activity * 0.18,
+            0.18 + activity * 0.28,
         ],
         WindowCityDistrictVisualKind::ClinicDistrict => [
-            0.88 + activity * 0.08,
-            0.92,
-            0.84 + activity * 0.12,
-            0.26 + activity * 0.3,
+            0.74 + activity * 0.08,
+            0.84,
+            0.74 + activity * 0.08,
+            0.16 + activity * 0.24,
         ],
     }
 }
@@ -2915,17 +2992,17 @@ fn window_generated_city_sign_color(
     chunk: WindowGeneratedCityChunkVisual,
     segment_index: usize,
 ) -> [f32; 4] {
-    let faction_alpha = 0.46 + chunk.faction_strength * 0.32;
+    let faction_alpha = 0.28 + chunk.faction_strength * 0.24;
     if segment_index.is_multiple_of(3) {
         return window_with_alpha(chunk.faction_color, faction_alpha);
     }
 
     match chunk.district_kind {
-        WindowCityDistrictVisualKind::CorporateCore => [0.74, 0.92, 1.0, 0.76],
-        WindowCityDistrictVisualKind::RainAlleySlum => [0.18, 0.92, 1.0, 0.68],
-        WindowCityDistrictVisualKind::IndustrialDock => [1.0, 0.68, 0.18, 0.72],
-        WindowCityDistrictVisualKind::BlackMarket => [1.0, 0.18, 0.76, 0.82],
-        WindowCityDistrictVisualKind::ClinicDistrict => [1.0, 0.18, 0.24, 0.72],
+        WindowCityDistrictVisualKind::CorporateCore => [0.62, 0.74, 0.8, 0.48],
+        WindowCityDistrictVisualKind::RainAlleySlum => [0.34, 0.54, 0.54, 0.42],
+        WindowCityDistrictVisualKind::IndustrialDock => [0.86, 0.58, 0.24, 0.48],
+        WindowCityDistrictVisualKind::BlackMarket => [0.82, 0.24, 0.56, 0.52],
+        WindowCityDistrictVisualKind::ClinicDistrict => [0.86, 0.42, 0.42, 0.46],
     }
 }
 
@@ -5026,7 +5103,7 @@ impl WindowSceneGeometry {
             [0.035, 0.04, 0.046, 1.0],
             [0.38, 0.0, 0.42, 0.0],
             10_001,
-            0.86,
+            0.48,
         );
         self.world_micro_detailed_box_with_surface_response(
             [-6.05, -10.0, 0.0],
@@ -5034,7 +5111,7 @@ impl WindowSceneGeometry {
             [0.11, 0.105, 0.1, 1.0],
             WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
             10_002,
-            0.72,
+            0.44,
         );
         self.world_micro_detailed_box_with_surface_response(
             [5.45, -10.0, 0.0],
@@ -5042,40 +5119,49 @@ impl WindowSceneGeometry {
             [0.11, 0.105, 0.1, 1.0],
             WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
             10_003,
-            0.72,
+            0.44,
         );
 
         for y in (-8..=12).step_by(2) {
-            self.world_box_with_surface_response(
-                [-0.04, y as f32 - 0.45, 0.0],
-                [0.04, y as f32 + 0.45, 0.028],
-                [0.12, 0.18, 0.21, 0.58],
+            self.world_flat_ellipse_with_surface_response(
+                [0.0, y as f32, 0.031],
+                [0.105, 0.48],
+                10,
+                [0.18, 0.18, 0.145, 0.34],
                 [0.24, 0.0, 0.68, 0.0],
             );
         }
 
         for y in (-9..=13).step_by(3) {
-            self.world_box(
-                [-5.43, y as f32 - 0.018, 0.05],
-                [-5.32, y as f32 + 0.018, 3.28],
+            self.world_cylinder_between(
+                [-5.375, y as f32, 0.05],
+                [-5.375, y as f32, 3.28],
+                0.034,
+                5,
                 [0.055, 0.06, 0.068, 1.0],
             );
-            self.world_box(
-                [5.32, y as f32 - 0.018, 0.05],
-                [5.43, y as f32 + 0.018, 3.28],
+            self.world_cylinder_between(
+                [5.375, y as f32, 0.05],
+                [5.375, y as f32, 3.28],
+                0.034,
+                5,
                 [0.055, 0.06, 0.068, 1.0],
             );
         }
 
         for z in [0.72, 1.55, 2.38, 3.18] {
-            self.world_box(
-                [-5.42, -9.8, z],
-                [-5.34, 13.8, z + 0.025],
+            self.world_cylinder_between(
+                [-5.38, -9.8, z],
+                [-5.38, 13.8, z + 0.025],
+                0.025,
+                5,
                 [0.045, 0.048, 0.054, 1.0],
             );
-            self.world_box(
-                [5.34, -9.8, z],
-                [5.42, 13.8, z + 0.025],
+            self.world_cylinder_between(
+                [5.38, -9.8, z],
+                [5.38, 13.8, z + 0.025],
+                0.025,
+                5,
                 [0.045, 0.048, 0.054, 1.0],
             );
         }
@@ -5088,10 +5174,19 @@ impl WindowSceneGeometry {
         ] {
             let x0 = if x < 0.0 { x - 0.022 } else { x };
             let x1 = if x < 0.0 { x } else { x + 0.022 };
-            self.world_box([x0, y - 0.46, 1.04], [x1, y + 0.46, 1.68], color);
-            self.world_box(
-                [x0, y - 0.4, 1.72],
-                [x1, y + 0.4, 1.77],
+            self.world_oriented_rect_with_surface_response(
+                [(x0 + x1) * 0.5, y, 1.36],
+                [0.0, 1.0, 0.0],
+                normalize3([0.0, 0.08, 1.0]),
+                [0.46, 0.32],
+                color,
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+            self.world_cylinder_between(
+                [(x0 + x1) * 0.5, y - 0.4, 1.72],
+                [(x0 + x1) * 0.5, y + 0.4, 1.74],
+                0.018,
+                5,
                 [0.35, 0.38, 0.42, 0.84],
             );
         }
@@ -5112,15 +5207,21 @@ impl WindowSceneGeometry {
         }
 
         for y in [-8.8, -4.2, 1.2, 5.8, 10.4] {
-            self.world_box(
-                [-5.16, y - 0.32, 0.22],
-                [-4.92, y + 0.32, 0.9],
+            self.world_ellipsoid_with_surface_response(
+                [-5.02, y, 0.5],
+                [0.13, 0.32, 0.34],
+                4,
+                7,
                 [0.05, 0.075, 0.09, 1.0],
+                WINDOW_SURFACE_RESPONSE_METAL,
             );
-            self.world_box(
-                [4.92, y - 0.42, 0.34],
-                [5.16, y + 0.42, 1.02],
+            self.world_ellipsoid_with_surface_response(
+                [5.02, y, 0.68],
+                [0.14, 0.38, 0.34],
+                4,
+                7,
                 [0.075, 0.055, 0.045, 1.0],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
             );
         }
 
@@ -5157,6 +5258,9 @@ impl WindowSceneGeometry {
             self.world_ellipse_ring(center, inner, outer, 18, color);
         }
 
+        self.add_window_alley_natural_breakup();
+        self.add_window_alley_irregular_ground_detail();
+
         self.world_cylinder_between(
             [-5.72, -9.4, 2.65],
             [-5.72, 13.4, 2.92],
@@ -5181,6 +5285,693 @@ impl WindowSceneGeometry {
 
         self.add_window_alley_vertical_city_detail();
         self.add_window_alley_surface_detail();
+    }
+
+    fn add_window_alley_irregular_ground_detail(&mut self) {
+        for (center, inner, outer, color, segments) in [
+            (
+                [-2.15, -5.35, 0.064],
+                [0.18, 0.06],
+                [0.54, 0.18],
+                [0.018, 0.015, 0.012, 0.78],
+                12,
+            ),
+            (
+                [2.58, -0.85, 0.064],
+                [0.14, 0.052],
+                [0.46, 0.16],
+                [0.022, 0.017, 0.012, 0.72],
+                10,
+            ),
+            (
+                [-1.02, 5.65, 0.064],
+                [0.2, 0.07],
+                [0.62, 0.2],
+                [0.016, 0.014, 0.012, 0.68],
+                12,
+            ),
+        ] {
+            self.world_ellipse_ring_with_surface_response(
+                center,
+                inner,
+                outer,
+                segments,
+                color,
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+
+        for (center, right, up, half_extents, color) in [
+            (
+                [-1.84, -5.28, 0.071],
+                normalize3([1.0, 0.18, 0.0]),
+                [0.0, 1.0, 0.0],
+                [0.42, 0.035],
+                [0.055, 0.044, 0.03, 0.42],
+            ),
+            (
+                [2.78, -0.8, 0.071],
+                normalize3([1.0, -0.24, 0.0]),
+                [0.0, 1.0, 0.0],
+                [0.36, 0.03],
+                [0.065, 0.05, 0.033, 0.38],
+            ),
+            (
+                [-0.68, 5.72, 0.071],
+                normalize3([1.0, 0.12, 0.0]),
+                [0.0, 1.0, 0.0],
+                [0.48, 0.04],
+                [0.046, 0.038, 0.028, 0.44],
+            ),
+        ] {
+            self.world_oriented_rect_with_surface_response(
+                center,
+                right,
+                up,
+                half_extents,
+                color,
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+
+        for lane in [-1.0_f32, 1.0] {
+            for (index, y) in [-7.4_f32, -3.6, 0.9, 4.8, 9.2].into_iter().enumerate() {
+                let seed = 30_101 + index as u64 + u64::from(lane > 0.0) * 100;
+                let x = lane * (1.42 + window_stable_unit(seed, 1) * 0.18);
+                let width = 0.09 + window_stable_unit(seed, 2) * 0.05;
+                self.world_oriented_rect_with_surface_response(
+                    [x, y, 0.069 + index as f32 * 0.0006],
+                    normalize3([0.18 * lane, 1.0, 0.0]),
+                    [1.0, 0.0, 0.0],
+                    [0.5 + window_stable_unit(seed, 3) * 0.34, width],
+                    [
+                        0.07,
+                        0.056,
+                        0.038,
+                        0.18 + window_stable_unit(seed, 4) * 0.12,
+                    ],
+                    WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+                );
+            }
+        }
+
+        for (index, (x, y, radii, color)) in [
+            (
+                -4.82,
+                -1.85,
+                [0.08, 0.05, 0.032],
+                [0.05, 0.043, 0.032, 0.82],
+            ),
+            (
+                -4.64,
+                4.75,
+                [0.105, 0.058, 0.036],
+                [0.072, 0.052, 0.034, 0.84],
+            ),
+            (
+                4.72,
+                -5.92,
+                [0.09, 0.052, 0.03],
+                [0.058, 0.046, 0.034, 0.78],
+            ),
+            (4.56, 2.18, [0.12, 0.065, 0.038], [0.04, 0.036, 0.03, 0.8]),
+            (
+                -3.18,
+                8.65,
+                [0.075, 0.042, 0.03],
+                [0.09, 0.064, 0.038, 0.76],
+            ),
+            (
+                3.08,
+                10.12,
+                [0.068, 0.04, 0.026],
+                [0.055, 0.044, 0.032, 0.74],
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let z = 0.095 + index as f32 * 0.001;
+            self.world_ellipsoid_with_surface_response(
+                [x, y, z],
+                radii,
+                3,
+                6,
+                color,
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+
+        for (center, right, up, half_extents, color) in [
+            (
+                [-3.72, -2.35, 0.078],
+                normalize3([0.86, 0.2, 0.0]),
+                [0.0, 1.0, 0.0],
+                [0.18, 0.035],
+                [0.12, 0.095, 0.068, 0.5],
+            ),
+            (
+                [3.42, 5.18, 0.079],
+                normalize3([0.62, -0.36, 0.0]),
+                [0.0, 1.0, 0.0],
+                [0.16, 0.04],
+                [0.07, 0.082, 0.072, 0.46],
+            ),
+            (
+                [-0.44, 1.85, 0.08],
+                normalize3([0.4, 0.9, 0.0]),
+                [0.0, 1.0, 0.0],
+                [0.22, 0.032],
+                [0.18, 0.15, 0.095, 0.34],
+            ),
+        ] {
+            self.world_oriented_rect_with_surface_response(
+                center,
+                right,
+                up,
+                half_extents,
+                color,
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+
+        for (x, y, side) in [(-5.28, -6.35, 1.0_f32), (5.28, 6.15, -1.0)] {
+            self.world_cylinder_between_with_surface_response(
+                [x, y - 0.44, 0.116],
+                [x + side * 0.06, y + 0.44, 0.128],
+                0.045,
+                6,
+                [0.075, 0.068, 0.056, 0.84],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+            self.world_oriented_rect_with_surface_response(
+                [x + side * 0.04, y, 0.146],
+                [0.0, 1.0, 0.0],
+                normalize3([side * 0.22, 0.0, 1.0]),
+                [0.42, 0.018],
+                [0.018, 0.015, 0.012, 0.46],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+    }
+
+    fn add_window_alley_natural_breakup(&mut self) {
+        for (center, radii, color) in [
+            (
+                [-4.15, -9.15, 0.055],
+                [0.7, 0.2],
+                [0.055, 0.045, 0.032, 0.48],
+            ),
+            (
+                [3.55, -6.35, 0.056],
+                [0.52, 0.18],
+                [0.064, 0.052, 0.036, 0.42],
+            ),
+            (
+                [-3.85, -1.05, 0.057],
+                [0.82, 0.24],
+                [0.04, 0.036, 0.028, 0.52],
+            ),
+            (
+                [3.75, 4.35, 0.056],
+                [0.74, 0.22],
+                [0.066, 0.048, 0.034, 0.44],
+            ),
+            (
+                [-4.3, 9.45, 0.057],
+                [0.58, 0.18],
+                [0.052, 0.043, 0.031, 0.46],
+            ),
+        ] {
+            self.world_flat_ellipse_with_surface_response(
+                center,
+                radii,
+                10,
+                color,
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+
+        for (x, y, sx, sy, sz, color) in [
+            (-4.82, -8.72, 0.15, 0.28, 0.07, [0.072, 0.058, 0.04, 0.9]),
+            (-5.02, -5.4, 0.1, 0.18, 0.045, [0.048, 0.042, 0.032, 0.82]),
+            (4.86, -2.95, 0.13, 0.24, 0.06, [0.064, 0.052, 0.036, 0.86]),
+            (-4.92, 2.42, 0.12, 0.22, 0.055, [0.044, 0.04, 0.032, 0.82]),
+            (4.8, 7.88, 0.16, 0.3, 0.072, [0.068, 0.054, 0.038, 0.88]),
+            (-4.78, 11.2, 0.11, 0.2, 0.052, [0.05, 0.044, 0.034, 0.84]),
+        ] {
+            self.world_ellipsoid_with_surface_response(
+                [x, y, 0.07 + sz * 0.45],
+                [sx, sy, sz],
+                3,
+                6,
+                color,
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+
+        for (x, y, radii, color) in [
+            (-4.62, -6.45, [0.34, 0.19, 0.16], [0.034, 0.03, 0.026, 0.92]),
+            (4.7, 1.95, [0.28, 0.2, 0.14], [0.044, 0.038, 0.032, 0.9]),
+            (-4.55, 6.65, [0.3, 0.18, 0.13], [0.07, 0.052, 0.038, 0.86]),
+        ] {
+            self.world_ellipsoid_with_surface_response(
+                [x, y, 0.16],
+                radii,
+                4,
+                8,
+                color,
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+            self.world_oriented_rect_with_surface_response(
+                [x, y - 0.03, 0.26],
+                [1.0, 0.0, 0.0],
+                normalize3([0.0, 0.25, 1.0]),
+                [radii[0] * 0.52, 0.018],
+                [0.012, 0.01, 0.009, 0.26],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+
+        for (x, y) in [(-4.45, -3.2), (4.52, 6.55)] {
+            self.world_ellipse_ring_with_surface_response(
+                [x, y, 0.11],
+                [0.16, 0.058],
+                [0.31, 0.12],
+                12,
+                [0.012, 0.011, 0.01, 0.92],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+            self.world_cylinder_between_with_surface_response(
+                [x - 0.02, y - 0.13, 0.15],
+                [x + 0.02, y + 0.13, 0.15],
+                0.13,
+                8,
+                [0.018, 0.017, 0.016, 0.88],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+
+        for (x, y, height, color) in [
+            (-4.78, 0.35, 0.58, [0.17, 0.105, 0.055, 0.94]),
+            (4.68, -7.35, 0.52, [0.105, 0.12, 0.12, 0.92]),
+        ] {
+            self.world_cylinder_between_with_surface_response(
+                [x, y, 0.08],
+                [x, y, height],
+                0.17,
+                10,
+                color,
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+            for z in [0.11, height - 0.02] {
+                self.world_ellipse_ring_with_surface_response(
+                    [x, y, z],
+                    [0.11, 0.048],
+                    [0.18, 0.075],
+                    10,
+                    [0.035, 0.03, 0.024, 0.82],
+                    WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+                );
+            }
+        }
+
+        self.add_window_alley_parked_delivery_bike();
+        self.add_window_alley_parked_utility_van();
+
+        for (center, right, up, half_extents) in [
+            (
+                [-4.72, -7.8, 2.72],
+                [0.0, 1.0, 0.0],
+                normalize3([0.0, 0.1, 1.0]),
+                [1.1, 0.2],
+            ),
+            (
+                [4.72, 3.2, 2.54],
+                [0.0, 1.0, 0.0],
+                normalize3([0.0, -0.12, 1.0]),
+                [1.28, 0.24],
+            ),
+            (
+                [0.4, -4.8, 0.066],
+                [1.0, 0.08, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.6, 0.16],
+            ),
+        ] {
+            self.world_oriented_rect_with_surface_response(
+                center,
+                right,
+                up,
+                half_extents,
+                [0.76, 0.62, 0.42, 0.12],
+                WINDOW_SURFACE_RESPONSE_DEFAULT,
+            );
+        }
+    }
+
+    fn add_window_alley_parked_delivery_bike(&mut self) {
+        let x = 3.65;
+        let y = -8.55;
+        let z = 0.12;
+        let metal = [0.12, 0.13, 0.118, 0.95];
+        let dark = [0.018, 0.017, 0.015, 0.95];
+        let rubber = [0.01, 0.01, 0.01, 0.92];
+        let cargo = [0.28, 0.16, 0.07, 0.9];
+
+        self.world_ellipse_ring_with_surface_response(
+            [x, y, 0.075],
+            [0.52, 0.14],
+            [1.28, 0.36],
+            14,
+            [0.014, 0.012, 0.01, 0.26],
+            WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+        );
+
+        for wheel_x in [x - 0.52, x + 0.52] {
+            self.world_ellipse_ring_with_surface_response(
+                [wheel_x, y, z + 0.18],
+                [0.14, 0.04],
+                [0.28, 0.09],
+                14,
+                rubber,
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+            self.world_cylinder_between_with_surface_response(
+                [wheel_x, y - 0.055, z + 0.18],
+                [wheel_x, y + 0.055, z + 0.18],
+                0.19,
+                10,
+                [0.018, 0.018, 0.017, 0.86],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+            self.world_ellipsoid_with_surface_response(
+                [wheel_x, y, z + 0.18],
+                [0.052, 0.026, 0.052],
+                4,
+                8,
+                [0.18, 0.17, 0.14, 0.82],
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+        }
+
+        self.world_cylinder_between_with_surface_response(
+            [x - 0.5, y, z + 0.22],
+            [x + 0.18, y, z + 0.42],
+            0.032,
+            8,
+            metal,
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
+        self.world_cylinder_between_with_surface_response(
+            [x + 0.18, y, z + 0.42],
+            [x + 0.5, y, z + 0.23],
+            0.026,
+            8,
+            metal,
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
+        self.world_ellipsoid_with_surface_response(
+            [x - 0.04, y, z + 0.43],
+            [0.36, 0.11, 0.095],
+            5,
+            12,
+            [0.11, 0.105, 0.092, 0.96],
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
+        self.world_ellipsoid_with_surface_response(
+            [x - 0.14, y - 0.01, z + 0.58],
+            [0.24, 0.075, 0.045],
+            4,
+            9,
+            dark,
+            WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+        );
+        self.world_ellipsoid_with_surface_response(
+            [x + 0.45, y, z + 0.62],
+            [0.26, 0.16, 0.18],
+            5,
+            10,
+            cargo,
+            WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+        );
+        self.world_cylinder_between_with_surface_response(
+            [x + 0.34, y, z + 0.49],
+            [x + 0.54, y, z + 0.88],
+            0.022,
+            8,
+            metal,
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
+        self.world_cylinder_between_with_surface_response(
+            [x + 0.5, y - 0.18, z + 0.88],
+            [x + 0.5, y + 0.18, z + 0.88],
+            0.018,
+            8,
+            metal,
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
+        self.world_oriented_rect_with_surface_response(
+            [x - 0.56, y - 0.01, z + 0.34],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.052, 0.026],
+            [0.86, 0.72, 0.42, 0.28],
+            WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE,
+        );
+    }
+
+    fn add_window_alley_parked_utility_van(&mut self) {
+        let x = -3.72;
+        let y = 8.85;
+        let z = 0.08;
+        let body = [0.18, 0.21, 0.19, 0.96];
+        let oxidized = [0.11, 0.13, 0.12, 0.86];
+        let glass = [0.18, 0.31, 0.34, 0.46];
+        let rubber = [0.012, 0.011, 0.01, 0.94];
+        let dirt = [0.17, 0.11, 0.056, 0.72];
+
+        self.world_ellipse_ring_with_surface_response(
+            [x, y, 0.065],
+            [0.52, 0.72],
+            [0.92, 1.42],
+            14,
+            [0.012, 0.011, 0.009, 0.28],
+            WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+        );
+        self.world_ellipsoid_with_surface_response(
+            [x, y, z + 0.46],
+            [0.72, 1.02, 0.35],
+            6,
+            12,
+            body,
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
+        self.world_ellipsoid_with_surface_response(
+            [x + 0.02, y - 0.26, z + 0.78],
+            [0.56, 0.48, 0.32],
+            5,
+            10,
+            oxidized,
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
+
+        for wheel_y in [y - 0.68, y + 0.66] {
+            for wheel_x in [x - 0.58, x + 0.58] {
+                self.world_cylinder_between_with_surface_response(
+                    [wheel_x, wheel_y - 0.08, z + 0.24],
+                    [wheel_x, wheel_y + 0.08, z + 0.24],
+                    0.2,
+                    10,
+                    rubber,
+                    WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+                );
+                self.world_ellipsoid_with_surface_response(
+                    [wheel_x, wheel_y, z + 0.24],
+                    [0.07, 0.035, 0.07],
+                    4,
+                    8,
+                    [0.18, 0.17, 0.14, 0.86],
+                    WINDOW_SURFACE_RESPONSE_METAL,
+                );
+            }
+        }
+
+        for side_x in [x - 0.64, x + 0.64] {
+            self.world_oriented_rect_with_surface_response(
+                [side_x, y - 0.24, z + 0.78],
+                [0.0, 1.0, 0.0],
+                normalize3([0.0, -0.12, 1.0]),
+                [0.24, 0.11],
+                glass,
+                WINDOW_SURFACE_RESPONSE_GLASS,
+            );
+            self.world_oriented_rect_with_surface_response(
+                [side_x, y + 0.26, z + 0.68],
+                [0.0, 1.0, 0.0],
+                normalize3([0.0, 0.08, 1.0]),
+                [0.28, 0.095],
+                window_with_alpha(glass, 0.34),
+                WINDOW_SURFACE_RESPONSE_GLASS,
+            );
+        }
+
+        self.world_oriented_rect_with_surface_response(
+            [x, y - 0.82, z + 0.74],
+            [1.0, 0.0, 0.0],
+            normalize3([0.0, -0.24, 1.0]),
+            [0.36, 0.13],
+            [0.2, 0.34, 0.36, 0.42],
+            WINDOW_SURFACE_RESPONSE_GLASS,
+        );
+        self.world_cylinder_between_with_surface_response(
+            [x - 0.36, y - 0.98, z + 0.54],
+            [x + 0.36, y - 0.98, z + 0.54],
+            0.02,
+            8,
+            [0.78, 0.64, 0.38, 0.34],
+            WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE,
+        );
+        self.world_cylinder_between_with_surface_response(
+            [x - 0.38, y + 1.02, z + 0.5],
+            [x + 0.38, y + 1.02, z + 0.5],
+            0.018,
+            8,
+            [0.52, 0.12, 0.075, 0.3],
+            WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE,
+        );
+
+        for rack_x in [x - 0.34, x + 0.34] {
+            self.world_cylinder_between_with_surface_response(
+                [rack_x, y - 0.72, z + 1.1],
+                [rack_x, y + 0.78, z + 1.08],
+                0.018,
+                7,
+                [0.07, 0.075, 0.068, 0.88],
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+        }
+        for rack_y in [y - 0.58, y + 0.58] {
+            self.world_cylinder_between_with_surface_response(
+                [x - 0.44, rack_y, z + 1.09],
+                [x + 0.44, rack_y, z + 1.09],
+                0.016,
+                7,
+                [0.07, 0.075, 0.068, 0.88],
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+        }
+
+        for (patch_y, patch_z, radii) in [
+            (y - 0.44, z + 0.44, [0.08, 0.24, 0.035]),
+            (y + 0.42, z + 0.36, [0.075, 0.28, 0.032]),
+            (y + 0.84, z + 0.26, [0.09, 0.18, 0.03]),
+        ] {
+            self.world_ellipsoid_with_surface_response(
+                [x - 0.66, patch_y, patch_z],
+                radii,
+                4,
+                8,
+                dirt,
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+
+        for side_x in [x - 0.78, x + 0.78] {
+            self.world_ellipsoid_with_surface_response(
+                [side_x, y - 0.55, z + 0.72],
+                [0.052, 0.03, 0.04],
+                4,
+                7,
+                [0.035, 0.038, 0.036, 0.88],
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+            self.world_cylinder_between_with_surface_response(
+                [side_x * 0.992 + x * 0.008, y - 0.5, z + 0.7],
+                [side_x * 0.982 + x * 0.018, y - 0.38, z + 0.68],
+                0.011,
+                5,
+                [0.035, 0.038, 0.036, 0.88],
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+        }
+
+        for wiper_x in [x - 0.16, x + 0.16] {
+            self.world_cylinder_between_with_surface_response(
+                [wiper_x, y - 0.83, z + 0.64],
+                [wiper_x + 0.18, y - 0.84, z + 0.75],
+                0.006,
+                5,
+                [0.018, 0.019, 0.018, 0.82],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+
+        for side_x in [x - 0.67, x + 0.67] {
+            for seam_y in [y - 0.15, y + 0.34] {
+                self.world_oriented_rect_with_surface_response(
+                    [side_x, seam_y, z + 0.56],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                    [0.006, 0.19],
+                    [0.024, 0.026, 0.024, 0.54],
+                    WINDOW_SURFACE_RESPONSE_METAL,
+                );
+            }
+            self.world_ellipsoid_with_surface_response(
+                [side_x, y + 0.1, z + 0.55],
+                [0.018, 0.008, 0.012],
+                3,
+                6,
+                [0.052, 0.058, 0.054, 0.78],
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+        }
+
+        for wheel_y in [y - 0.68, y + 0.66] {
+            for wheel_x in [x - 0.58, x + 0.58] {
+                self.world_ellipsoid_with_surface_response(
+                    [wheel_x, wheel_y, z + 0.38],
+                    [0.19, 0.05, 0.045],
+                    3,
+                    7,
+                    window_scale_color(body, 0.64),
+                    WINDOW_SURFACE_RESPONSE_METAL,
+                );
+            }
+        }
+
+        for (dent_x, dent_y, dent_z, radii) in [
+            (x - 0.54, y + 0.18, z + 0.58, [0.045, 0.11, 0.018]),
+            (x + 0.58, y - 0.34, z + 0.48, [0.04, 0.09, 0.016]),
+            (x - 0.1, y + 0.76, z + 0.33, [0.12, 0.035, 0.014]),
+        ] {
+            self.world_ellipsoid_with_surface_response(
+                [dent_x, dent_y, dent_z],
+                radii,
+                3,
+                6,
+                [0.052, 0.058, 0.052, 0.42],
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+        }
+
+        self.world_oriented_rect_with_surface_response(
+            [x, y - 1.035, z + 0.42],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.16, 0.04],
+            [0.62, 0.58, 0.42, 0.38],
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
+        self.world_oriented_rect_with_surface_response(
+            [x, y + 1.045, z + 0.42],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.14, 0.035],
+            [0.32, 0.08, 0.055, 0.28],
+            WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE,
+        );
     }
 
     fn add_window_alley_vertical_city_detail(&mut self) {
@@ -5227,7 +6018,7 @@ impl WindowSceneGeometry {
                 color,
                 WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
                 ((y0.to_bits() as u64) << 24) ^ ((z1.to_bits() as u64) << 3) ^ 20_000,
-                0.78,
+                0.5,
             );
 
             let face_x = if west_wall { -6.095 } else { 6.095 };
@@ -5398,10 +6189,10 @@ impl WindowSceneGeometry {
         }
 
         for (west_wall, y, z, color) in [
-            (true, -8.7, 4.1, [0.1, 0.86, 1.0, 0.62]),
-            (false, -5.0, 4.65, [1.0, 0.16, 0.72, 0.58]),
-            (true, 1.1, 4.85, [0.92, 0.8, 0.24, 0.56]),
-            (false, 7.7, 4.25, [0.26, 1.0, 0.7, 0.54]),
+            (true, -8.7, 4.1, [0.22, 0.62, 0.72, 0.34]),
+            (false, -5.0, 4.65, [0.72, 0.22, 0.48, 0.32]),
+            (true, 1.1, 4.85, [0.82, 0.62, 0.28, 0.34]),
+            (false, 7.7, 4.25, [0.3, 0.7, 0.48, 0.32]),
         ] {
             let x = if west_wall { -5.92 } else { 5.92 };
             self.world_billboard_with_surface_response(
@@ -5542,9 +6333,9 @@ impl WindowSceneGeometry {
         }
 
         for (x, y, z, glow) in [
-            (-5.22, -3.45, 1.34, [0.08, 0.72, 0.88, 0.78]),
-            (5.22, 4.6, 1.92, [1.0, 0.18, 0.62, 0.72]),
-            (-5.22, 10.9, 1.18, [0.9, 0.72, 0.24, 0.7]),
+            (-5.22, -3.45, 1.34, [0.16, 0.56, 0.66, 0.46]),
+            (5.22, 4.6, 1.92, [0.78, 0.22, 0.46, 0.42]),
+            (-5.22, 10.9, 1.18, [0.82, 0.62, 0.24, 0.42]),
         ] {
             let west_wall = x < 0.0;
             let panel_min_x = if west_wall { x - 0.055 } else { x };
@@ -5577,10 +6368,10 @@ impl WindowSceneGeometry {
         }
 
         for (west_wall, y, z, color) in [
-            (true, -5.9, 2.48, [0.7, 0.14, 1.0, 1.0]),
-            (false, -0.7, 2.22, [0.12, 0.92, 1.0, 1.0]),
-            (true, 4.75, 2.72, [1.0, 0.46, 0.12, 1.0]),
-            (false, 10.4, 2.0, [0.82, 1.0, 0.34, 1.0]),
+            (true, -5.9, 2.48, [0.58, 0.2, 0.76, 0.62]),
+            (false, -0.7, 2.22, [0.22, 0.64, 0.72, 0.62]),
+            (true, 4.75, 2.72, [0.86, 0.48, 0.2, 0.62]),
+            (false, 10.4, 2.0, [0.62, 0.72, 0.3, 0.62]),
         ] {
             let x = if west_wall { -5.18 } else { 5.18 };
             let bracket_end_x = if west_wall { -4.52 } else { 4.52 };
@@ -6423,7 +7214,9 @@ impl WindowSceneGeometry {
                 self.add_window_city_material_low_detail_surface(placement, color, surface);
             }
         }
-        self.add_window_city_material_micro_detail(placement, pulse);
+        if window_city_material_should_spend_micro_detail(placement) {
+            self.add_window_city_material_micro_detail(placement, pulse);
+        }
     }
 
     fn add_window_city_material_light_reflections(
@@ -6438,7 +7231,7 @@ impl WindowSceneGeometry {
                 matches!(placement.kind, WindowCityMaterialPlacementKind::Neon)
                     && placement.surface_response[3] > 0.08
             })
-            .take(12)
+            .take(6)
             .collect::<Vec<_>>();
         if neon_sources.is_empty() {
             return;
@@ -6680,8 +7473,8 @@ impl WindowSceneGeometry {
         let half_width = half_x.max(0.36);
         let half_height = half_y.max(0.08);
         let glow = window_with_alpha(
-            color,
-            (0.58 + pulse * 0.22 + placement.importance * 0.16).min(1.0),
+            window_mix_color(color, [0.72, 0.68, 0.58, color[3]], 0.18),
+            (0.34 + pulse * 0.12 + placement.importance * 0.1).min(0.72),
         );
 
         self.world_oriented_rect_with_surface_response(
@@ -6696,7 +7489,7 @@ impl WindowSceneGeometry {
             [x - half_width, y + 0.018, sign_z],
             [x + half_width, y + 0.018, sign_z],
             0.025 + placement.importance * 0.012,
-            8,
+            7,
             glow,
             WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
         );
@@ -6717,8 +7510,8 @@ impl WindowSceneGeometry {
             [x, y, 0.07],
             [half_width * 0.18, 0.08],
             [half_width * 0.76, 0.28 + pulse * 0.06],
-            16,
-            window_with_alpha(glow, 0.1 + placement.importance * 0.12),
+            10,
+            window_with_alpha(glow, 0.055 + placement.importance * 0.08),
             WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
         );
     }
@@ -6776,15 +7569,19 @@ impl WindowSceneGeometry {
         let [x, y, z] = placement.center_meters;
         let [half_x, half_y] = placement.half_extents_meters;
         let base_z = z.max(0.08);
-        self.world_box_with_surface_response(
-            [x - half_x * 0.32, y - half_y * 0.24, base_z],
-            [x + half_x * 0.32, y + half_y * 0.24, base_z + 0.82],
+        self.world_ellipsoid_with_surface_response(
+            [x, y, base_z + 0.42],
+            [half_x * 0.34, half_y * 0.24, 0.42],
+            5,
+            10,
             color,
             surface,
         );
-        self.world_box_with_surface_response(
-            [x - half_x * 0.24, y - half_y * 0.18, base_z + 0.86],
-            [x + half_x * 0.24, y + half_y * 0.18, base_z + 1.18],
+        self.world_ellipsoid_with_surface_response(
+            [x, y, base_z + 1.02],
+            [half_x * 0.25, half_y * 0.2, 0.17],
+            5,
+            10,
             window_scale_color(color, 1.08 + pulse * 0.04),
             surface,
         );
@@ -7597,8 +8394,10 @@ impl WindowSceneGeometry {
     ) {
         let span_x = (max_x - min_x).abs().max(1.0);
         let detail_loaded = chunk.detail_loaded();
+        let detail_budget = window_generated_city_detail_budget(chunk);
         let segment_count = if detail_loaded {
-            (span_x / 9.5).ceil().clamp(3.0, 8.0) as usize
+            let target_width = if detail_budget >= 4 { 11.0 } else { 14.0 };
+            (span_x / target_width).ceil().clamp(2.0, 6.0) as usize
         } else {
             2
         };
@@ -7655,7 +8454,9 @@ impl WindowSceneGeometry {
                 let mut building_color = window_scale_color(chunk.district_color, brightness);
                 building_color[3] = if detail_loaded { 0.98 } else { 0.62 };
 
-                if detail_loaded {
+                let use_micro_facade =
+                    detail_budget >= 3 && window_generated_city_lod_scale(chunk) > 0.58;
+                if use_micro_facade {
                     self.world_micro_detailed_box_with_surface_response(
                         [x0, y0, 0.03],
                         [x1, y1, height],
@@ -7683,8 +8484,10 @@ impl WindowSceneGeometry {
                     continue;
                 }
 
-                let window_rows = ((height - 0.9) / 1.15).floor().clamp(1.0, 7.0) as usize;
-                let window_columns = ((x1 - x0) / 1.9).floor().clamp(1.0, 5.0) as usize;
+                let max_rows = if detail_budget >= 4 { 5.0 } else { 3.0 };
+                let max_columns = if detail_budget >= 4 { 4.0 } else { 3.0 };
+                let window_rows = ((height - 0.9) / 1.45).floor().clamp(1.0, max_rows) as usize;
+                let window_columns = ((x1 - x0) / 2.25).floor().clamp(1.0, max_columns) as usize;
                 for row in 0..window_rows {
                     let z = 0.82 + row as f32 * ((height - 1.2) / window_rows as f32).max(0.5);
                     for column in 0..window_columns {
@@ -7711,8 +8514,8 @@ impl WindowSceneGeometry {
                 let sign_count = chunk
                     .light_count
                     .saturating_add(chunk.story_hook_count)
-                    .clamp(1, 8) as usize;
-                if segment < sign_count {
+                    .clamp(1, 5) as usize;
+                if detail_budget >= 2 && segment < sign_count {
                     let sign_z = (1.35 + jitter * 2.1).min(height - 0.35).max(0.8);
                     let sign_color = window_generated_city_sign_color(chunk, segment);
                     self.world_oriented_rect_with_surface_response(
@@ -7736,20 +8539,22 @@ impl WindowSceneGeometry {
                     );
                 }
 
-                self.add_window_generated_city_building_detail(
-                    chunk,
-                    WindowGeneratedCityBuildingSlice {
-                        x0,
-                        x1,
-                        y0,
-                        y1,
-                        face_y,
-                        side,
-                        height,
-                        segment,
-                        jitter,
-                    },
-                );
+                if detail_budget >= 3 || segment.is_multiple_of(2) {
+                    self.add_window_generated_city_building_detail(
+                        chunk,
+                        WindowGeneratedCityBuildingSlice {
+                            x0,
+                            x1,
+                            y0,
+                            y1,
+                            face_y,
+                            side,
+                            height,
+                            segment,
+                            jitter,
+                        },
+                    );
+                }
             }
         }
     }
@@ -7771,6 +8576,7 @@ impl WindowSceneGeometry {
         let roof_z = slice.height.max(0.58);
         let facade_y0 = (slice.face_y - 0.045).min(slice.face_y + 0.045);
         let facade_y1 = (slice.face_y - 0.045).max(slice.face_y + 0.045);
+        let detail_budget = window_generated_city_detail_budget(chunk);
         let roof_detail_density = (0.34
             + chunk.pollution * 0.22
             + chunk.crime_pressure * 0.2
@@ -7804,7 +8610,11 @@ impl WindowSceneGeometry {
             WINDOW_SURFACE_RESPONSE_METAL,
         );
 
-        let unit_count = if width > 3.2 { 2 } else { 1 };
+        let unit_count = if detail_budget >= 4 && width > 3.2 {
+            2
+        } else {
+            1
+        };
         for index in 0..unit_count {
             let t = (index as f32 + 0.65) / (unit_count as f32 + 0.3);
             let x = slice.x0 + width * t;
@@ -7817,14 +8627,25 @@ impl WindowSceneGeometry {
             let hx = (0.18 + width * 0.018).clamp(0.16, 0.32);
             let hy = (0.16 + depth * 0.024).clamp(0.12, 0.28);
             let hz = 0.18 + window_stable_unit(seed, 7_301 + index as u64) * 0.16;
-            self.world_micro_detailed_box_with_surface_response(
-                [x - hx, y - hy, roof_z + 0.05],
-                [x + hx, y + hy, roof_z + 0.05 + hz],
-                [0.13, 0.15, 0.16, 0.96],
-                WINDOW_SURFACE_RESPONSE_METAL,
-                seed ^ (index as u64).wrapping_mul(17) ^ 0xA2C1,
-                roof_detail_density,
-            );
+            if detail_budget >= 4 {
+                self.world_micro_detailed_box_with_surface_response(
+                    [x - hx, y - hy, roof_z + 0.05],
+                    [x + hx, y + hy, roof_z + 0.05 + hz],
+                    [0.13, 0.15, 0.16, 0.96],
+                    WINDOW_SURFACE_RESPONSE_METAL,
+                    seed ^ (index as u64).wrapping_mul(17) ^ 0xA2C1,
+                    roof_detail_density,
+                );
+            } else {
+                self.world_ellipsoid_with_surface_response(
+                    [x, y, roof_z + 0.16 + hz * 0.42],
+                    [hx * 0.9, hy * 0.75, hz * 0.42],
+                    4,
+                    8,
+                    [0.13, 0.15, 0.16, 0.92],
+                    WINDOW_SURFACE_RESPONSE_METAL,
+                );
+            }
         }
 
         let vent_x = slice.x0 + width * (0.18 + window_stable_unit(seed, 7_401) * 0.64);
@@ -7833,7 +8654,7 @@ impl WindowSceneGeometry {
             [vent_x, vent_y, roof_z + 0.08],
             [vent_x, vent_y, roof_z + 0.5 + slice.jitter * 0.36],
             0.035,
-            8,
+            window_generated_city_minor_segments(chunk),
             [0.1, 0.12, 0.13, 1.0],
             WINDOW_SURFACE_RESPONSE_METAL,
         );
@@ -7925,15 +8746,17 @@ impl WindowSceneGeometry {
                         roof_z + 1.15 + chunk.surveillance_level * 0.52,
                     ],
                     0.018,
-                    8,
-                    [0.15, 0.2, 0.23, 1.0],
+                    window_generated_city_minor_segments(chunk),
+                    [0.15, 0.2, 0.23, 0.9],
                     WINDOW_SURFACE_RESPONSE_METAL,
                 );
-                self.world_box_with_surface_response(
-                    [mast_x - 0.055, mast_y - 0.055, roof_z + 1.08],
-                    [mast_x + 0.055, mast_y + 0.055, roof_z + 1.28],
-                    [0.22, 0.86, 1.0, 0.56 + chunk.surveillance_level * 0.22],
-                    WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
+                self.world_ellipsoid_with_surface_response(
+                    [mast_x, mast_y, roof_z + 1.18],
+                    [0.07, 0.07, 0.11],
+                    4,
+                    window_generated_city_minor_segments(chunk),
+                    [0.72, 0.78, 0.68, 0.22 + chunk.surveillance_level * 0.18],
+                    WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE,
                 );
             }
             WindowCityDistrictVisualKind::RainAlleySlum => {
@@ -7957,7 +8780,7 @@ impl WindowSceneGeometry {
                     [tank_x, tank_y, roof_z + 0.08],
                     [tank_x, tank_y, roof_z + 0.72],
                     0.17,
-                    12,
+                    window_generated_city_major_segments(chunk),
                     [0.12, 0.14, 0.13, 0.96],
                     WINDOW_SURFACE_RESPONSE_METAL,
                 );
@@ -7969,7 +8792,7 @@ impl WindowSceneGeometry {
                         roof_z + 0.32,
                     ],
                     0.026,
-                    8,
+                    window_generated_city_minor_segments(chunk),
                     [0.09, 0.1, 0.095, 1.0],
                     WINDOW_SURFACE_RESPONSE_METAL,
                 );
@@ -8002,7 +8825,7 @@ impl WindowSceneGeometry {
                     [0.0, slice.side, 0.0],
                     [0.0, 0.0, 1.0],
                     [0.16, 0.42],
-                    [0.86, 0.12, 0.72, 0.72],
+                    [0.74, 0.16, 0.48, 0.44],
                     WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
                 );
                 self.world_oriented_rect_with_surface_response(
@@ -8026,7 +8849,7 @@ impl WindowSceneGeometry {
                         .min(slice.height - 0.35)
                         .max(0.9),
                 ];
-                let cross_color = [0.38, 1.0, 0.9, 0.68];
+                let cross_color = [0.62, 0.86, 0.74, 0.42];
                 self.world_oriented_rect_with_surface_response(
                     cross_center,
                     [1.0, 0.0, 0.0],
@@ -8056,6 +8879,13 @@ impl WindowSceneGeometry {
         depth: f32,
         roof_z: f32,
     ) {
+        let detail_budget = window_generated_city_detail_budget(chunk);
+        if detail_budget == 0 {
+            return;
+        }
+        let major_segments = window_generated_city_major_segments(chunk);
+        let minor_segments = window_generated_city_minor_segments(chunk);
+        let (ellipsoid_lat, ellipsoid_lon) = window_generated_city_ellipsoid_segments(chunk);
         let facade_y = slice.face_y + slice.side * 0.052;
         let facade_normal = [0.0, slice.side, 0.0];
         let dirty = (0.28 + chunk.pollution * 0.34 + chunk.crime_pressure * 0.12).clamp(0.0, 0.78);
@@ -8075,15 +8905,15 @@ impl WindowSceneGeometry {
             [tank_x, tank_y, roof_z + 0.08],
             [tank_x, tank_y, roof_z + 0.42 + slice.jitter * 0.22],
             tank_radius,
-            16,
+            major_segments,
             metal_color,
             WINDOW_SURFACE_RESPONSE_METAL,
         );
         self.world_ellipsoid_with_surface_response(
             [tank_x, tank_y, roof_z + 0.45 + slice.jitter * 0.22],
             [tank_radius * 1.02, tank_radius * 1.02, tank_radius * 0.36],
-            5,
-            14,
+            ellipsoid_lat,
+            ellipsoid_lon,
             window_scale_color(metal_color, 1.08),
             WINDOW_SURFACE_RESPONSE_METAL,
         );
@@ -8091,12 +8921,13 @@ impl WindowSceneGeometry {
             [tank_x, tank_y, roof_z + 0.11],
             [tank_radius * 0.72, tank_radius * 0.42],
             [tank_radius * 1.24, tank_radius * 0.84],
-            18,
+            major_segments,
             [0.028, 0.026, 0.022, dirty * 0.42],
             WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
         );
 
-        let pipe_count = (1 + (chunk.pollution * 3.0).ceil() as usize).clamp(1, 4);
+        let pipe_count =
+            (1 + (chunk.pollution * 2.0).ceil() as usize).clamp(1, detail_budget.max(2));
         for index in 0..pipe_count {
             let pipe_x = slice.x0
                 + width
@@ -8113,7 +8944,7 @@ impl WindowSceneGeometry {
                 [pipe_x, facade_y, lower],
                 [pipe_x, facade_y, upper],
                 radius,
-                8,
+                minor_segments,
                 window_scale_color(metal_color, 0.72 + index as f32 * 0.08),
                 WINDOW_SURFACE_RESPONSE_METAL,
             );
@@ -8122,37 +8953,39 @@ impl WindowSceneGeometry {
                     [pipe_x, facade_y, upper],
                     [pipe_x + width * 0.11, facade_y, upper + 0.04],
                     radius * 0.88,
-                    8,
+                    minor_segments,
                     metal_color,
                     WINDOW_SURFACE_RESPONSE_METAL,
                 );
             }
         }
 
-        let duct_z = (slice.height * (0.38 + window_stable_unit(seed, 9_401) * 0.34))
-            .min(slice.height - 0.38)
-            .max(0.78);
-        self.world_cylinder_between_with_surface_response(
-            [slice.x0 + width * 0.2, facade_y, duct_z],
-            [
-                slice.x1 - width * 0.18,
-                facade_y,
-                duct_z + slice.jitter * 0.04,
-            ],
-            0.032 + window_stable_unit(seed, 9_503) * 0.018,
-            10,
-            [0.075, 0.078, 0.074, 0.84],
-            WINDOW_SURFACE_RESPONSE_METAL,
-        );
-        for end_x in [slice.x0 + width * 0.2, slice.x1 - width * 0.18] {
-            self.world_ellipsoid_with_surface_response(
-                [end_x, facade_y, duct_z],
-                [0.052, 0.026, 0.052],
-                4,
-                8,
-                [0.048, 0.05, 0.048, 0.82],
+        if detail_budget >= 3 {
+            let duct_z = (slice.height * (0.38 + window_stable_unit(seed, 9_401) * 0.34))
+                .min(slice.height - 0.38)
+                .max(0.78);
+            self.world_cylinder_between_with_surface_response(
+                [slice.x0 + width * 0.2, facade_y, duct_z],
+                [
+                    slice.x1 - width * 0.18,
+                    facade_y,
+                    duct_z + slice.jitter * 0.04,
+                ],
+                0.032 + window_stable_unit(seed, 9_503) * 0.018,
+                minor_segments,
+                [0.075, 0.078, 0.074, 0.84],
                 WINDOW_SURFACE_RESPONSE_METAL,
             );
+            for end_x in [slice.x0 + width * 0.2, slice.x1 - width * 0.18] {
+                self.world_ellipsoid_with_surface_response(
+                    [end_x, facade_y, duct_z],
+                    [0.052, 0.026, 0.052],
+                    4,
+                    minor_segments,
+                    [0.048, 0.05, 0.048, 0.82],
+                    WINDOW_SURFACE_RESPONSE_METAL,
+                );
+            }
         }
 
         let awning_z = (0.86 + slice.jitter * 0.62)
@@ -8192,7 +9025,8 @@ impl WindowSceneGeometry {
             );
         }
 
-        let rubble_count = (2 + (chunk.pollution * 4.0).ceil() as usize).clamp(2, 7);
+        let rubble_count =
+            (1 + (chunk.pollution * 3.0).ceil() as usize).clamp(1, detail_budget + 2);
         for rubble in 0..rubble_count {
             let rubble_seed = seed ^ 0xB455 ^ rubble as u64;
             let x = slice.x0 + width * (0.08 + window_stable_unit(rubble_seed, 10_101) * 0.84);
@@ -8205,21 +9039,21 @@ impl WindowSceneGeometry {
                     0.018 + window_stable_unit(rubble_seed, 10_409) * 0.04,
                     0.014 + window_stable_unit(rubble_seed, 10_503) * 0.024,
                 ],
-                4,
-                8,
+                3,
+                minor_segments,
                 [0.052, 0.046, 0.036, 0.62 + dirty * 0.22],
                 WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
             );
         }
 
-        if chunk.surveillance_level > 0.28 {
+        if chunk.surveillance_level > 0.28 && detail_budget >= 3 {
             let camera_x = slice.x0 + width * (0.2 + window_stable_unit(seed, 10_801) * 0.6);
             let camera_z = (slice.height * 0.68).clamp(1.1, slice.height - 0.28);
             self.world_cylinder_between_with_surface_response(
                 [camera_x, facade_y, camera_z],
                 [camera_x, facade_y + slice.side * 0.18, camera_z - 0.04],
                 0.014,
-                8,
+                minor_segments,
                 [0.05, 0.054, 0.052, 0.88],
                 WINDOW_SURFACE_RESPONSE_METAL,
             );
@@ -8227,7 +9061,7 @@ impl WindowSceneGeometry {
                 [camera_x, facade_y + slice.side * 0.22, camera_z - 0.05],
                 [0.055, 0.035, 0.035],
                 4,
-                8,
+                minor_segments,
                 [0.032, 0.034, 0.035, 0.92],
                 WINDOW_SURFACE_RESPONSE_METAL,
             );
@@ -8236,12 +9070,12 @@ impl WindowSceneGeometry {
                 [1.0, 0.0, 0.0],
                 [0.0, 0.0, 1.0],
                 [0.026, 0.018],
-                [0.72, 0.78, 0.72, 0.24 + chunk.surveillance_level * 0.18],
+                [0.72, 0.78, 0.72, 0.12 + chunk.surveillance_level * 0.12],
                 WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE,
             );
         }
 
-        if chunk.crime_pressure > 0.48 {
+        if chunk.crime_pressure > 0.48 && detail_budget >= 2 {
             let mark_count = (1 + (chunk.crime_pressure * 3.0).ceil() as usize).clamp(1, 4);
             for mark in 0..mark_count {
                 let mark_seed = seed ^ 0x6AFF ^ mark as u64;
@@ -8285,7 +9119,10 @@ impl WindowSceneGeometry {
 
         let road_y = chunk.center_meters[1];
         let span_x = (max_x - min_x).abs().max(1.0);
-        let npc_count = chunk.npc_count.clamp(0, 7) as usize;
+        let detail_budget = window_generated_city_detail_budget(chunk);
+        let lod_scale = window_generated_city_lod_scale(chunk);
+        let npc_count =
+            ((chunk.npc_count.clamp(0, 7) as f32 * lod_scale).ceil() as usize).clamp(0, 5);
         for index in 0..npc_count {
             let t = (index as f32 + 0.65) / (npc_count as f32 + 0.35);
             let x = min_x + span_x * t;
@@ -8311,7 +9148,8 @@ impl WindowSceneGeometry {
 
         self.add_window_generated_city_population_flow(chunk, min_x, max_x, road_y, phase);
 
-        let story_count = chunk.story_hook_count.clamp(0, 5) as usize;
+        let story_count =
+            ((chunk.story_hook_count.clamp(0, 5) as f32 * lod_scale).ceil() as usize).clamp(0, 4);
         for index in 0..story_count {
             let t = (index as f32 + 1.0) / (story_count as f32 + 1.0);
             let x = min_x + span_x * t;
@@ -8320,13 +9158,14 @@ impl WindowSceneGeometry {
                 [x, road_y, 0.086],
                 [0.2 + pulse * 0.08, 0.11 + pulse * 0.04],
                 [0.48 + pulse * 0.16, 0.24 + pulse * 0.08],
-                16,
-                [1.0, 0.62, 0.24, 0.34 + pulse * 0.16],
-                WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
+                window_generated_city_minor_segments(chunk),
+                [0.78, 0.56, 0.32, 0.18 + pulse * 0.12],
+                WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE,
             );
         }
 
-        let hazard_count = chunk.hazard_count.clamp(0, 5) as usize;
+        let hazard_count =
+            ((chunk.hazard_count.clamp(0, 5) as f32 * lod_scale).ceil() as usize).clamp(0, 4);
         for index in 0..hazard_count {
             let t = (index as f32 + 0.5) / hazard_count.max(1) as f32;
             let x = min_x + span_x * t;
@@ -8335,16 +9174,16 @@ impl WindowSceneGeometry {
                 [x, y, 0.066],
                 [0.22, 0.08],
                 [0.74 + chunk.pollution * 0.38, 0.24 + chunk.pollution * 0.1],
-                16,
-                [0.18, 0.58, 0.86, 0.22 + chunk.pollution * 0.18],
+                window_generated_city_minor_segments(chunk),
+                [0.16, 0.38, 0.42, 0.16 + chunk.pollution * 0.14],
                 WINDOW_SURFACE_RESPONSE_WET_ROAD,
             );
         }
 
         self.add_window_generated_city_road_grime(chunk, min_x, max_x, road_y, phase);
 
-        if chunk.surveillance_level > 0.35 {
-            let camera_count = (chunk.surveillance_level * 4.0).ceil().clamp(1.0, 4.0) as usize;
+        if chunk.surveillance_level > 0.35 && detail_budget >= 3 {
+            let camera_count = (chunk.surveillance_level * 3.0).ceil().clamp(1.0, 3.0) as usize;
             for index in 0..camera_count {
                 let t = (index as f32 + 0.5) / camera_count as f32;
                 let x = min_x + span_x * t;
@@ -8358,15 +9197,17 @@ impl WindowSceneGeometry {
                     [x, y, 0.04],
                     [x, y, z],
                     0.022,
-                    8,
+                    window_generated_city_minor_segments(chunk),
                     [0.072, 0.084, 0.09, 1.0],
                     WINDOW_SURFACE_RESPONSE_METAL,
                 );
-                self.world_box_with_surface_response(
-                    [x - 0.16, y - 0.06, z - 0.05],
-                    [x + 0.16, y + 0.06, z + 0.07],
-                    [0.24, 0.9, 1.0, 0.78],
-                    WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
+                self.world_ellipsoid_with_surface_response(
+                    [x, y, z + 0.01],
+                    [0.15, 0.06, 0.075],
+                    4,
+                    window_generated_city_minor_segments(chunk),
+                    [0.66, 0.76, 0.68, 0.22 + chunk.surveillance_level * 0.16],
+                    WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE,
                 );
             }
         }
@@ -8384,7 +9225,7 @@ impl WindowSceneGeometry {
         let grime_count = (3
             + (chunk.pollution * 5.0).ceil() as usize
             + (chunk.crime_pressure * 2.0).ceil() as usize)
-            .clamp(4, 11);
+            .clamp(3, 7);
         for index in 0..grime_count {
             let seed = chunk.detail_seed ^ 0xD127 ^ index as u64;
             let t = ((index as f32 + 0.31) / grime_count as f32 + phase * 0.018).fract();
@@ -8401,7 +9242,7 @@ impl WindowSceneGeometry {
                     0.16 + window_stable_unit(seed, 31_307) * 0.22,
                     0.038 + window_stable_unit(seed, 31_409) * 0.08,
                 ],
-                18,
+                window_generated_city_minor_segments(chunk),
                 [0.034, 0.028, 0.02, rough_alpha],
                 WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
             );
@@ -8410,7 +9251,7 @@ impl WindowSceneGeometry {
                     [x + 0.06, y - 0.018, 0.089 + index as f32 * 0.0003],
                     [0.06, 0.02],
                     [0.19, 0.064],
-                    18,
+                    window_generated_city_minor_segments(chunk),
                     [0.08, 0.15, 0.16, wet.clamp(0.08, 0.34)],
                     WINDOW_SURFACE_RESPONSE_WET_ROAD,
                 );
@@ -8425,8 +9266,8 @@ impl WindowSceneGeometry {
                         0.012 + window_stable_unit(seed, 32_001) * 0.018,
                         0.008 + window_stable_unit(seed, 32_103) * 0.012,
                     ],
-                    4,
-                    8,
+                    3,
+                    window_generated_city_minor_segments(chunk),
                     [0.06, 0.052, 0.04, 0.76],
                     WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
                 );
@@ -8451,9 +9292,9 @@ impl WindowSceneGeometry {
                 [chunk.center_meters[0], road_y, 0.092],
                 [0.36, 0.14],
                 [0.74, 0.28],
-                18,
-                [1.0, 0.12, 0.08, 0.58],
-                WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
+                window_generated_city_minor_segments(chunk),
+                [0.78, 0.16, 0.1, 0.38],
+                WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE,
             );
         }
 
@@ -8466,8 +9307,11 @@ impl WindowSceneGeometry {
                     [1.0, 0.0, 0.0],
                     [0.0, 1.0, 0.0],
                     [span_x * 0.39, 0.045],
-                    window_with_alpha(chunk.faction_color, flow_alpha),
-                    WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
+                    window_with_alpha(
+                        window_scale_color(chunk.faction_color, 0.46),
+                        flow_alpha * 0.72,
+                    ),
+                    WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
                 );
             }
 
@@ -8523,7 +9367,7 @@ impl WindowSceneGeometry {
                 [min_x + span_x * 0.08, road_y + 1.72, 1.18],
                 [max_x - span_x * 0.08, road_y + 1.72, 1.18],
                 0.025,
-                8,
+                window_generated_city_minor_segments(chunk),
                 [0.15, 0.22, 0.25, 0.86],
                 WINDOW_SURFACE_RESPONSE_METAL,
             );
@@ -8532,7 +9376,7 @@ impl WindowSceneGeometry {
                 [1.0, 0.0, 0.0],
                 [0.0, 0.0, 1.0],
                 [span_x * 0.24, 0.09],
-                [0.62, 0.58, 0.44, 0.28 + traffic_density * 0.16],
+                [0.62, 0.58, 0.44, 0.16 + traffic_density * 0.1],
                 [0.58, 0.0, 0.08, 0.04],
             );
         }
@@ -8861,24 +9705,24 @@ impl WindowSceneGeometry {
         self.world_ellipsoid_with_surface_response(
             [x, y, z],
             [0.32, 0.15, 0.09],
-            8,
-            18,
+            5,
+            12,
             body_color,
             WINDOW_SURFACE_RESPONSE_METAL,
         );
         self.world_ellipsoid_with_surface_response(
             [x - 0.12, y, z - 0.025],
             [0.23, 0.105, 0.036],
-            5,
-            12,
+            4,
+            8,
             window_scale_color(body_color, 0.76),
             WINDOW_SURFACE_RESPONSE_METAL,
         );
         self.world_ellipsoid_with_surface_response(
             [x + 0.02, y, z + 0.055],
             [0.15, 0.105, 0.052],
-            5,
-            10,
+            4,
+            8,
             window_mix_color(body_color, [0.58, 0.72, 0.78, 0.86], 0.36),
             WINDOW_SURFACE_RESPONSE_GLASS,
         );
@@ -8887,7 +9731,7 @@ impl WindowSceneGeometry {
                 [x, y + rotor_side * 0.23, z + 0.012],
                 [0.12, 0.024],
                 [0.22, 0.048],
-                18,
+                12,
                 [0.09, 0.1, 0.105, 0.64],
                 WINDOW_SURFACE_RESPONSE_METAL,
             );
@@ -8944,24 +9788,24 @@ impl WindowSceneGeometry {
         self.world_ellipsoid_with_surface_response(
             [x, y, body_z],
             [length * 0.86, 0.18, 0.18],
-            8,
-            20,
+            5,
+            14,
             body_color,
             WINDOW_SURFACE_RESPONSE_METAL,
         );
         self.world_ellipsoid_with_surface_response(
             [x + heading * length * 0.3, y, body_z + 0.012],
             [length * 0.36, 0.15, 0.08],
-            5,
-            12,
+            4,
+            9,
             window_scale_color(body_color, 0.9),
             WINDOW_SURFACE_RESPONSE_METAL,
         );
         self.world_ellipsoid_with_surface_response(
             [x - heading * length * 0.06, y, body_z + 0.16],
             [length * 0.42, 0.13, 0.11],
-            7,
-            14,
+            5,
+            10,
             window_mix_color(body_color, [0.5, 0.64, 0.7, 0.86], 0.34),
             WINDOW_SURFACE_RESPONSE_GLASS,
         );
@@ -9004,7 +9848,7 @@ impl WindowSceneGeometry {
                     [wheel_x, wheel_y, 0.172],
                     [0.062, 0.02],
                     [0.12, 0.048],
-                    18,
+                    12,
                     [0.028, 0.026, 0.024, 0.72],
                     WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
                 );
@@ -9012,23 +9856,23 @@ impl WindowSceneGeometry {
                     [wheel_x, wheel_y - wheel_side * 0.035, 0.16],
                     [wheel_x, wheel_y + wheel_side * 0.035, 0.16],
                     0.078,
-                    16,
+                    10,
                     [0.014, 0.014, 0.015, 1.0],
                     WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
                 );
                 self.world_ellipsoid_with_surface_response(
                     [wheel_x, wheel_y, 0.16],
                     [0.034, 0.018, 0.034],
-                    5,
-                    8,
+                    4,
+                    7,
                     [0.16, 0.17, 0.17, 0.88],
                     WINDOW_SURFACE_RESPONSE_METAL,
                 );
                 self.world_ellipsoid_with_surface_response(
                     [wheel_x, wheel_y + wheel_side * 0.043, 0.16],
                     [0.02, 0.01, 0.02],
-                    4,
-                    8,
+                    3,
+                    6,
                     [0.46, 0.45, 0.38, 0.64],
                     WINDOW_SURFACE_RESPONSE_METAL,
                 );
@@ -9188,7 +10032,8 @@ impl WindowSceneGeometry {
         let road_y = chunk.center_meters[1];
         let prop_pressure =
             chunk.npc_count + chunk.hazard_count + chunk.streaming_dependency_count / 2;
-        let prop_count = (detail_budget + prop_pressure.min(6) as usize).clamp(2, 9);
+        let prop_count = (detail_budget + prop_pressure.min(3) as usize).clamp(1, 5);
+        let minor_segments = window_generated_city_minor_segments(chunk);
 
         for index in 0..prop_count {
             let t = (index as f32 + 0.42) / (prop_count as f32 + 0.3);
@@ -9216,14 +10061,25 @@ impl WindowSceneGeometry {
                 ),
             };
 
-            self.world_micro_detailed_box_with_surface_response(
-                [x - 0.16, y - 0.11, 0.055],
-                [x + 0.16, y + 0.11, 0.055 + height],
-                color,
-                surface,
-                chunk.detail_seed ^ (index as u64).wrapping_mul(71) ^ 0x5701,
-                (0.34 + chunk.pollution * 0.22 + chunk.crime_pressure * 0.16).clamp(0.0, 1.0),
-            );
+            if detail_budget >= 4 {
+                self.world_micro_detailed_box_with_surface_response(
+                    [x - 0.16, y - 0.11, 0.055],
+                    [x + 0.16, y + 0.11, 0.055 + height],
+                    color,
+                    surface,
+                    chunk.detail_seed ^ (index as u64).wrapping_mul(71) ^ 0x5701,
+                    (0.34 + chunk.pollution * 0.22 + chunk.crime_pressure * 0.16).clamp(0.0, 1.0),
+                );
+            } else {
+                self.world_ellipsoid_with_surface_response(
+                    [x, y, 0.11 + height * 0.34],
+                    [0.16, 0.1, 0.09 + height * 0.22],
+                    4,
+                    minor_segments,
+                    window_scale_color(color, 0.82),
+                    surface,
+                );
+            }
 
             let cluster_seed = chunk.detail_seed ^ 0x5711 ^ index as u64;
             let bag_offset = if side < 0.0 { -0.18 } else { 0.18 };
@@ -9250,7 +10106,7 @@ impl WindowSceneGeometry {
                     [barrel_x, barrel_y, 0.07],
                     [barrel_x, barrel_y, 0.44 + height * 0.12],
                     0.075,
-                    14,
+                    minor_segments,
                     window_mix_color(color, [0.18, 0.12, 0.07, 0.92], 0.34),
                     WINDOW_SURFACE_RESPONSE_METAL,
                 );
@@ -9259,7 +10115,7 @@ impl WindowSceneGeometry {
                         [barrel_x, barrel_y, cap_z],
                         [0.04, 0.024],
                         [0.088, 0.052],
-                        16,
+                        minor_segments,
                         [0.035, 0.032, 0.028, 0.52],
                         WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
                     );
@@ -9269,7 +10125,7 @@ impl WindowSceneGeometry {
                     [x + 0.22, y - side * 0.13, 0.095],
                     [0.07, 0.035],
                     [0.15, 0.082],
-                    18,
+                    minor_segments,
                     [0.018, 0.017, 0.016, 0.86],
                     WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
                 );
@@ -9277,7 +10133,7 @@ impl WindowSceneGeometry {
                     [x + 0.1, y - side * 0.24, 0.09],
                     [x + 0.36, y - side * 0.08, 0.12],
                     0.008,
-                    5,
+                    4,
                     [0.028, 0.026, 0.024, 0.7],
                     WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
                 );
@@ -9298,7 +10154,7 @@ impl WindowSceneGeometry {
                     [x, y, 0.062],
                     [0.16, 0.06],
                     [0.38 + chunk.pollution * 0.18, 0.14 + chunk.pollution * 0.08],
-                    14,
+                    minor_segments,
                     [0.14, 0.24, 0.18, 0.16 + chunk.pollution * 0.22],
                     WINDOW_SURFACE_RESPONSE_WET_ROAD,
                 );
@@ -9318,26 +10174,33 @@ impl WindowSceneGeometry {
         let center_x = chunk.center_meters[0];
         let road_y = chunk.center_meters[1];
         let span_x = (max_x - min_x).abs().max(1.0);
+        let major_segments = window_generated_city_major_segments(chunk);
+        let minor_segments = window_generated_city_minor_segments(chunk);
+        let (ellipsoid_lat, ellipsoid_lon) = window_generated_city_ellipsoid_segments(chunk);
 
         match chunk.district_kind {
             WindowCityDistrictVisualKind::CorporateCore => {
-                let pylon_count = detail_budget.clamp(2, 5);
+                let pylon_count = detail_budget.clamp(1, 3);
                 for index in 0..pylon_count {
                     let t = (index as f32 + 0.5) / pylon_count as f32;
                     let x = min_x + span_x * t;
                     for side in [-1.0_f32, 1.0] {
                         let y = road_y + side * 0.82;
-                        self.world_box_with_surface_response(
-                            [x - 0.07, y - 0.07, 0.06],
-                            [x + 0.07, y + 0.07, 0.86],
-                            [0.09, 0.13, 0.16, 1.0],
+                        self.world_cylinder_between_with_surface_response(
+                            [x, y, 0.06],
+                            [x, y, 0.86],
+                            0.06,
+                            minor_segments,
+                            [0.09, 0.13, 0.16, 0.92],
                             WINDOW_SURFACE_RESPONSE_METAL,
                         );
-                        self.world_box_with_surface_response(
-                            [x - 0.09, y - 0.09, 0.88],
-                            [x + 0.09, y + 0.09, 1.0],
-                            [0.2, 0.82, 1.0, 0.46 + chunk.surveillance_level * 0.24],
-                            WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
+                        self.world_ellipsoid_with_surface_response(
+                            [x, y, 0.94],
+                            [0.095, 0.075, 0.08],
+                            ellipsoid_lat,
+                            minor_segments,
+                            [0.66, 0.72, 0.64, 0.2 + chunk.surveillance_level * 0.16],
+                            WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE,
                         );
                     }
                 }
@@ -9367,57 +10230,73 @@ impl WindowSceneGeometry {
                     [tank_x, tank_y, 0.08],
                     [tank_x, tank_y, 1.38],
                     0.28,
-                    14,
+                    major_segments,
                     [0.11, 0.13, 0.13, 0.96],
                     WINDOW_SURFACE_RESPONSE_METAL,
                 );
-                for index in 0..detail_budget.clamp(2, 5) {
+                self.world_ellipsoid_with_surface_response(
+                    [tank_x, tank_y, 1.42],
+                    [0.29, 0.29, 0.08],
+                    ellipsoid_lat,
+                    ellipsoid_lon,
+                    [0.13, 0.14, 0.13, 0.9],
+                    WINDOW_SURFACE_RESPONSE_METAL,
+                );
+                for index in 0..detail_budget.clamp(1, 3) {
                     let x = center_x + index as f32 * 0.44 - 0.55;
-                    self.world_box_with_surface_response(
-                        [x - 0.18, min_y + 0.8, 0.06],
-                        [x + 0.18, min_y + 1.14, 0.46],
-                        [0.28, 0.13, 0.045, 0.94],
+                    self.world_cylinder_between_with_surface_response(
+                        [x, min_y + 0.96, 0.06],
+                        [x, min_y + 0.96, 0.46],
+                        0.14,
+                        minor_segments,
+                        [0.28, 0.13, 0.045, 0.88],
                         WINDOW_SURFACE_RESPONSE_METAL,
                     );
                 }
             }
             WindowCityDistrictVisualKind::BlackMarket => {
-                let stall_count = detail_budget.clamp(2, 6);
+                let stall_count = detail_budget.clamp(1, 4);
                 for index in 0..stall_count {
                     let t = (index as f32 + 0.5) / stall_count as f32;
                     let x = min_x + span_x * t;
                     let y = road_y + if index % 2 == 0 { -1.22 } else { 1.22 };
-                    self.world_box_with_surface_response(
-                        [x - 0.34, y - 0.2, 0.06],
-                        [x + 0.34, y + 0.2, 0.5],
-                        [0.05, 0.035, 0.042, 0.92],
+                    self.world_ellipsoid_with_surface_response(
+                        [x, y, 0.28],
+                        [0.34, 0.2, 0.22],
+                        ellipsoid_lat,
+                        ellipsoid_lon,
+                        [0.05, 0.035, 0.042, 0.86],
                         WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
                     );
                     self.world_oriented_rect_with_surface_response(
                         [x, y, 0.82],
                         [1.0, 0.0, 0.0],
-                        [0.0, 1.0, 0.0],
+                        normalize3([0.0, 1.0, -0.24]),
                         [0.48, 0.26],
                         [0.16, 0.045, 0.13, 0.84],
                         WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
                     );
-                    self.world_box_with_surface_response(
-                        [x - 0.28, y - 0.23, 0.84],
-                        [x + 0.28, y - 0.19, 0.91],
-                        [1.0, 0.22, 0.82, 0.58],
+                    self.world_cylinder_between_with_surface_response(
+                        [x - 0.28, y - 0.21, 0.88],
+                        [x + 0.28, y - 0.21, 0.88],
+                        0.018,
+                        minor_segments,
+                        [0.82, 0.24, 0.56, 0.32],
                         WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
                     );
                 }
             }
             WindowCityDistrictVisualKind::ClinicDistrict => {
-                let triage_count = detail_budget.clamp(2, 5);
+                let triage_count = detail_budget.clamp(1, 3);
                 for index in 0..triage_count {
                     let t = (index as f32 + 0.55) / triage_count as f32;
                     let x = min_x + span_x * t;
-                    self.world_box_with_surface_response(
-                        [x - 0.2, road_y - 1.1, 0.06],
-                        [x + 0.2, road_y - 0.82, 0.62],
-                        [0.16, 0.24, 0.26, 0.92],
+                    self.world_ellipsoid_with_surface_response(
+                        [x, road_y - 0.96, 0.34],
+                        [0.22, 0.15, 0.28],
+                        ellipsoid_lat,
+                        ellipsoid_lon,
+                        [0.16, 0.24, 0.26, 0.86],
                         WINDOW_SURFACE_RESPONSE_METAL,
                     );
                     self.world_oriented_rect_with_surface_response(
@@ -9425,8 +10304,8 @@ impl WindowSceneGeometry {
                         [1.0, 0.0, 0.0],
                         [0.0, 0.0, 1.0],
                         [0.18, 0.1],
-                        [0.28, 1.0, 0.86, 0.56],
-                        WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
+                        [0.56, 0.82, 0.68, 0.34],
+                        WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE,
                     );
                 }
             }
@@ -9562,12 +10441,12 @@ impl WindowSceneGeometry {
 
     pub fn add_window_alley_weather(&mut self, frame_index: u64, camera: WindowPerspectiveCamera) {
         let phase = (frame_index as f32 * 0.037).fract();
-        let rain_color = [0.52, 0.72, 0.88, 0.42];
-        for index in 0..54 {
-            let column = index % 9;
-            let row = index / 9;
+        let rain_color = [0.5, 0.62, 0.72, 0.24];
+        for index in 0..34 {
+            let column = index % 7;
+            let row = index / 7;
             let jitter = ((index * 37) % 100) as f32 / 100.0;
-            let x = -4.65 + column as f32 * 1.16 + jitter * 0.28;
+            let x = -4.65 + column as f32 * 1.5 + jitter * 0.28;
             let fall = (phase + jitter * 0.73).fract();
             let y = -9.6 + ((row as f32 * 3.15 + fall * 23.8) % 23.8);
             let z = 3.55 - ((jitter * 1.9 + phase * 0.45) % 0.62);
@@ -9597,20 +10476,20 @@ impl WindowSceneGeometry {
                 center,
                 inner,
                 outer,
-                14,
-                [0.46, 0.78, 1.0, 0.22 * (1.0 - ripple * 0.65)],
+                12,
+                [0.38, 0.56, 0.64, 0.12 * (1.0 - ripple * 0.65)],
             );
         }
 
         let right = camera.basis().right;
-        for (index, height) in [0.75, 1.02, 1.28, 1.56, 1.86].into_iter().enumerate() {
+        for (index, height) in [0.75, 1.08, 1.42, 1.78].into_iter().enumerate() {
             let drift = (phase + index as f32 * 0.23).fract();
             let center = [
                 -1.38 + drift * 0.28,
                 0.55 + drift * 0.42,
                 height + drift * 0.08,
             ];
-            let alpha = 0.18 * (1.0 - index as f32 * 0.09).max(0.35);
+            let alpha = 0.13 * (1.0 - index as f32 * 0.08).max(0.35);
             self.world_billboard(
                 center,
                 right,
@@ -9628,9 +10507,9 @@ impl WindowSceneGeometry {
         }
 
         for (center, color) in [
-            ([1.0, 3.05, 2.48], [1.0, 0.18, 0.72, 0.18]),
-            ([1.0, 2.85, 2.16], [0.16, 0.82, 1.0, 0.12]),
-            ([-4.82, 3.4, 1.52], [0.08, 0.7, 0.9, 0.09]),
+            ([1.0, 3.05, 2.48], [0.52, 0.46, 0.42, 0.05]),
+            ([1.0, 2.85, 2.16], [0.4, 0.5, 0.54, 0.05]),
+            ([-4.82, 3.4, 1.52], [0.34, 0.45, 0.48, 0.045]),
         ] {
             self.world_billboard(center, right, 3.1, 1.1, color);
         }
@@ -10289,7 +11168,7 @@ impl WindowSceneGeometry {
             up,
             [height * 0.006, height * 0.18],
             trim_color,
-            WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
+            clothing_response,
         );
 
         let collar_center = add3([x, y, z + height * 0.755], front_body);
@@ -10334,7 +11213,7 @@ impl WindowSceneGeometry {
                 up,
                 [height * 0.011, height * 0.017],
                 trim_color,
-                WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
+                clothing_response,
             );
             self.world_oriented_rect_with_surface_response(
                 add3(
@@ -10514,6 +11393,7 @@ impl WindowSceneGeometry {
         self.add_humanoid_eye_layer_details(instance, proxy, basis);
         self.add_humanoid_hair_strand_cards(instance, proxy, basis, seed);
         self.add_humanoid_clothing_seams_and_motion(instance, proxy, basis, seed);
+        self.add_humanoid_version4_anatomy_and_fabric_detail(instance, proxy, basis, seed);
 
         if humanoid_has_visible_cybernetic_detail(instance, proxy) {
             self.add_humanoid_cybernetic_detail(instance, proxy, basis, seed);
@@ -10773,6 +11653,286 @@ impl WindowSceneGeometry {
                 crease_color,
                 clothing_response,
             );
+        }
+    }
+
+    fn add_humanoid_version4_anatomy_and_fabric_detail(
+        &mut self,
+        instance: &WindowHumanoidProxyInstance<'_>,
+        proxy: &HumanProxyGeometry,
+        basis: HumanoidDetailBasis,
+        seed: u64,
+    ) {
+        if proxy.quality_tier < QualityTier::NormalRuntime {
+            return;
+        }
+
+        let [x, y] = instance.center_meters;
+        let z = instance.z_meters;
+        let height = proxy.height_meters;
+        let surface = instance.surface_state.as_ref();
+        let skin_response = humanoid_skin_surface_response(surface);
+        let cloth_response = humanoid_clothing_surface_response(surface);
+        let skin_color = humanoid_default_skin_color(instance.color);
+        let skin_shadow = humanoid_skin_soft_shadow_color(instance.color, surface);
+        let skin_highlight = humanoid_skin_warm_highlight_color(instance.color, surface);
+        let cloth_fold = humanoid_clothing_fold_shadow_color(instance.color, surface);
+        let cloth_edge = humanoid_clothing_worn_edge_color(instance.color, surface);
+        let boot_sole = humanoid_boot_sole_color(instance.color, surface);
+        let hero = proxy.quality_tier >= QualityTier::HeroHighFidelityRuntime;
+        let ellipsoid_segments = if hero { (5, 12) } else { (4, 8) };
+        let cylinder_segments = if hero { 8 } else { 6 };
+
+        let neck_base = add3(
+            [x, y, z + height * 0.754],
+            scale3(basis.forward, height * 0.006),
+        );
+        let neck_top = add3(
+            [x, y, z + height * 0.807],
+            scale3(basis.forward, height * 0.008),
+        );
+        self.world_cylinder_between_with_surface_response(
+            neck_base,
+            neck_top,
+            height * 0.038,
+            cylinder_segments,
+            window_scale_color(skin_color, 0.9),
+            skin_response,
+        );
+
+        let jaw_center = add3(
+            [x, y, z + height * 0.818],
+            add3(basis.front_face, scale3(basis.forward, height * 0.012)),
+        );
+        self.world_ellipsoid_with_surface_response(
+            jaw_center,
+            [height * 0.052, height * 0.026, height * 0.022],
+            ellipsoid_segments.0,
+            ellipsoid_segments.1,
+            skin_shadow,
+            skin_response,
+        );
+
+        for side in [-1.0_f32, 1.0] {
+            let shoulder = add3(
+                [x, y, z + height * 0.735],
+                add3(
+                    scale3(basis.right, side * height * 0.148),
+                    scale3(basis.forward, height * 0.012),
+                ),
+            );
+            self.world_ellipsoid_with_surface_response(
+                shoulder,
+                [height * 0.036, height * 0.032, height * 0.024],
+                ellipsoid_segments.0,
+                ellipsoid_segments.1,
+                window_scale_color(humanoid_clothing_color(instance.color), 1.08),
+                cloth_response,
+            );
+            self.world_oriented_rect_with_surface_response(
+                add3(
+                    [x, y, z + height * 0.748],
+                    add3(basis.front_body, scale3(basis.right, side * height * 0.073)),
+                ),
+                normalize3(add3(basis.right, scale3(basis.up, -side * 0.22))),
+                basis.up,
+                [height * 0.038, height * 0.0022],
+                skin_shadow,
+                skin_response,
+            );
+        }
+
+        for side in [-1.0_f32, 1.0] {
+            let ear_center = add3(
+                [x, y, z + height * 0.878],
+                add3(
+                    add3(basis.front_face, scale3(basis.forward, -height * 0.018)),
+                    scale3(basis.right, side * height * 0.104),
+                ),
+            );
+            self.world_ellipsoid_with_surface_response(
+                ear_center,
+                [height * 0.012, height * 0.008, height * 0.025],
+                ellipsoid_segments.0,
+                ellipsoid_segments.1,
+                skin_shadow,
+                skin_response,
+            );
+            if hero {
+                self.world_oriented_rect_with_surface_response(
+                    add3(ear_center, scale3(basis.forward, height * 0.004)),
+                    basis.right,
+                    basis.up,
+                    [height * 0.0032, height * 0.013],
+                    humanoid_skin_microdetail_color(instance.color, surface),
+                    skin_response,
+                );
+            }
+        }
+
+        self.world_oriented_rect_with_surface_response(
+            add3([x, y, z + height * 0.873], basis.front_face),
+            basis.right,
+            basis.up,
+            [height * 0.012, height * 0.019],
+            skin_highlight,
+            skin_response,
+        );
+        for side in [-1.0_f32, 1.0] {
+            self.world_oriented_rect_with_surface_response(
+                add3(
+                    [x, y, z + height * 0.852],
+                    add3(basis.front_face, scale3(basis.right, side * height * 0.014)),
+                ),
+                basis.right,
+                basis.up,
+                [height * 0.0035, height * 0.0022],
+                humanoid_inner_mouth_color(instance.color, surface),
+                skin_response,
+            );
+        }
+
+        if hero {
+            let mouth_center = add3([x, y, z + height * 0.848], basis.front_face);
+            self.world_oriented_rect_with_surface_response(
+                add3(mouth_center, scale3(basis.up, height * 0.006)),
+                basis.right,
+                basis.up,
+                [height * 0.024, height * 0.0025],
+                humanoid_tooth_enamel_color(instance.color, surface),
+                skin_response,
+            );
+            self.world_oriented_rect_with_surface_response(
+                add3(mouth_center, scale3(basis.up, -height * 0.005)),
+                basis.right,
+                basis.up,
+                [height * 0.017, height * 0.003],
+                humanoid_tongue_color(instance.color, surface),
+                skin_response,
+            );
+        }
+
+        let belt_center = add3([x, y, z + height * 0.448], basis.front_body);
+        self.world_oriented_rect_with_surface_response(
+            belt_center,
+            basis.right,
+            basis.up,
+            [height * 0.112, height * 0.007],
+            cloth_edge,
+            cloth_response,
+        );
+
+        for side in [-1.0_f32, 1.0] {
+            let knee_center = add3(
+                [x, y, z + height * 0.285],
+                add3(basis.front_body, scale3(basis.right, side * height * 0.068)),
+            );
+            self.world_ellipsoid_with_surface_response(
+                knee_center,
+                [height * 0.026, height * 0.016, height * 0.017],
+                ellipsoid_segments.0,
+                ellipsoid_segments.1,
+                cloth_fold,
+                cloth_response,
+            );
+            let ankle_center = add3(
+                [x, y, z + height * 0.082],
+                add3(basis.front_body, scale3(basis.right, side * height * 0.069)),
+            );
+            self.world_oriented_rect_with_surface_response(
+                ankle_center,
+                basis.right,
+                basis.up,
+                [height * 0.028, height * 0.005],
+                boot_sole,
+                cloth_response,
+            );
+            self.world_ellipsoid_with_surface_response(
+                add3(ankle_center, scale3(basis.forward, height * 0.028)),
+                [height * 0.028, height * 0.046, height * 0.012],
+                ellipsoid_segments.0,
+                ellipsoid_segments.1,
+                boot_sole,
+                cloth_response,
+            );
+        }
+
+        let fold_count = if hero { 9 } else { 4 };
+        for index in 0..fold_count {
+            let salt = index as u64;
+            let lateral = (window_stable_unit(seed, 21_103 + salt) * 2.0 - 1.0) * height * 0.091;
+            let vertical = height * (0.482 + window_stable_unit(seed, 21_701 + salt) * 0.214);
+            let tilt = (window_stable_unit(seed, 22_307 + salt) - 0.5) * 0.42;
+            self.world_oriented_rect_with_surface_response(
+                add3(
+                    [x, y, z + vertical],
+                    add3(basis.front_body, scale3(basis.right, lateral)),
+                ),
+                normalize3(add3(basis.right, scale3(basis.up, tilt))),
+                basis.up,
+                [
+                    height * (0.018 + window_stable_unit(seed, 22_911 + salt) * 0.032),
+                    height * 0.002,
+                ],
+                cloth_fold,
+                cloth_response,
+            );
+        }
+
+        for side in [-1.0_f32, 1.0] {
+            let palm_center = add3(
+                [x, y, z + height * 0.438],
+                add3(
+                    add3(basis.front_body, scale3(basis.right, side * height * 0.188)),
+                    scale3(basis.forward, height * 0.012),
+                ),
+            );
+            self.world_ellipsoid_with_surface_response(
+                palm_center,
+                [height * 0.018, height * 0.011, height * 0.025],
+                ellipsoid_segments.0,
+                ellipsoid_segments.1,
+                skin_color,
+                skin_response,
+            );
+
+            if !hero {
+                continue;
+            }
+
+            for finger in 0..4 {
+                let finger_lateral = (finger as f32 - 1.5) * height * 0.006 * side;
+                let finger_start = add3(
+                    palm_center,
+                    add3(
+                        scale3(basis.right, finger_lateral),
+                        scale3(basis.up, -height * 0.012),
+                    ),
+                );
+                let finger_end = add3(
+                    finger_start,
+                    add3(
+                        scale3(basis.up, -height * (0.024 + finger as f32 * 0.0015)),
+                        scale3(basis.forward, height * 0.003),
+                    ),
+                );
+                self.world_cylinder_between_with_surface_response(
+                    finger_start,
+                    finger_end,
+                    height * 0.0032,
+                    5,
+                    window_scale_color(skin_color, 0.96),
+                    skin_response,
+                );
+                self.world_oriented_rect_with_surface_response(
+                    finger_end,
+                    basis.right,
+                    basis.up,
+                    [height * 0.0026, height * 0.0015],
+                    humanoid_fingernail_color(instance.color, surface),
+                    skin_response,
+                );
+            }
         }
     }
 
@@ -12188,7 +13348,7 @@ fn humanoid_boot_color(color: [f32; 4]) -> [f32; 4] {
 }
 
 fn humanoid_trim_color() -> [f32; 4] {
-    [0.08, 0.92, 1.0, 1.0]
+    [0.22, 0.62, 0.66, 0.62]
 }
 
 fn humanoid_skin_wet_sheen_color(surface: &HumanSurfaceState) -> Option<[f32; 4]> {
@@ -12287,6 +13447,105 @@ fn humanoid_peach_fuzz_color(
     ])
 }
 
+fn humanoid_skin_soft_shadow_color(
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> [f32; 4] {
+    let color = humanoid_default_skin_color(color);
+    let dirt = surface_state
+        .map(|surface| surface.dirt)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    let bruise = surface_state
+        .map(|surface| surface.bruising)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    window_clamp_color([
+        color[0] * 0.72 + dirt * 0.035 + bruise * 0.04,
+        color[1] * 0.58 - dirt * 0.028,
+        color[2] * 0.52 + bruise * 0.035,
+        0.72,
+    ])
+}
+
+fn humanoid_skin_warm_highlight_color(
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> [f32; 4] {
+    let color = humanoid_default_skin_color(color);
+    let wetness = surface_state
+        .map(|surface| surface.skin_wetness + surface.sweat_sheen * 0.45)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    window_clamp_color([
+        color[0] * 1.08 + wetness * 0.035,
+        color[1] * 1.02 + wetness * 0.03,
+        color[2] * 0.96 + wetness * 0.028,
+        0.48,
+    ])
+}
+
+fn humanoid_inner_mouth_color(
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> [f32; 4] {
+    let redness = surface_state
+        .map(|surface| surface.injury_overlay * 0.35 + surface.eye_redness * 0.18)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    window_mix_color(
+        humanoid_default_skin_color(color),
+        [0.11 + redness * 0.08, 0.024, 0.025 + redness * 0.04, 0.9],
+        0.74,
+    )
+}
+
+fn humanoid_tooth_enamel_color(
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> [f32; 4] {
+    let dirt = surface_state
+        .map(|surface| surface.dirt)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    window_clamp_color([
+        0.82 + color[0] * 0.035 - dirt * 0.1,
+        0.78 + color[1] * 0.03 - dirt * 0.08,
+        0.68 + color[2] * 0.025 - dirt * 0.06,
+        0.84,
+    ])
+}
+
+fn humanoid_tongue_color(color: [f32; 4], surface_state: Option<&HumanSurfaceState>) -> [f32; 4] {
+    let wetness = surface_state
+        .map(|surface| surface.skin_wetness + surface.sweat_sheen * 0.25)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    window_clamp_color([
+        0.34 + color[0] * 0.06 + wetness * 0.04,
+        0.09 + color[1] * 0.035,
+        0.08 + color[2] * 0.035 + wetness * 0.035,
+        0.72,
+    ])
+}
+
+fn humanoid_fingernail_color(
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> [f32; 4] {
+    let dirt = surface_state
+        .map(|surface| surface.dirt)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    let skin = humanoid_default_skin_color(color);
+    window_clamp_color([
+        skin[0] * 1.08 - dirt * 0.08,
+        skin[1] * 1.0 - dirt * 0.06,
+        skin[2] * 0.92 - dirt * 0.04,
+        0.58,
+    ])
+}
+
 fn humanoid_eye_tearline_color(surface_state: Option<&HumanSurfaceState>) -> [f32; 4] {
     let redness = surface_state
         .map(|surface| surface.eye_redness)
@@ -12358,6 +13617,58 @@ fn humanoid_clothing_crease_color(
     ])
 }
 
+fn humanoid_clothing_fold_shadow_color(
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> [f32; 4] {
+    let wetness = surface_state
+        .map(|surface| surface.clothing_wetness)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    let damage = surface_state
+        .map(|surface| surface.clothing_damage)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    window_clamp_color([
+        color[0] * 0.045 + 0.018 + damage * 0.035,
+        color[1] * 0.05 + 0.017 + damage * 0.02,
+        color[2] * (0.065 + wetness * 0.055) + 0.02,
+        0.62,
+    ])
+}
+
+fn humanoid_clothing_worn_edge_color(
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> [f32; 4] {
+    let dirt = surface_state
+        .map(|surface| surface.dirt)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    window_clamp_color([
+        color[0] * 0.075 + 0.045 - dirt * 0.018,
+        color[1] * 0.074 + 0.044 - dirt * 0.018,
+        color[2] * 0.082 + 0.045 - dirt * 0.012,
+        0.74,
+    ])
+}
+
+fn humanoid_boot_sole_color(
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> [f32; 4] {
+    let dirt = surface_state
+        .map(|surface| surface.dirt)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    window_clamp_color([
+        color[0] * 0.025 + 0.012 + dirt * 0.03,
+        color[1] * 0.024 + 0.011 + dirt * 0.024,
+        color[2] * 0.022 + 0.011 + dirt * 0.016,
+        0.86,
+    ])
+}
+
 fn humanoid_cybernetic_plate_color(seed: u64) -> [f32; 4] {
     let tint = window_stable_unit(seed, 19_771);
     window_clamp_color([
@@ -12370,9 +13681,9 @@ fn humanoid_cybernetic_plate_color(seed: u64) -> [f32; 4] {
 
 fn humanoid_cybernetic_glow_color(seed: u64) -> [f32; 4] {
     if window_stable_unit(seed, 20_411) > 0.5 {
-        [0.18, 0.92, 1.0, 0.92]
+        [0.24, 0.58, 0.62, 0.52]
     } else {
-        [1.0, 0.38, 0.2, 0.86]
+        [0.78, 0.44, 0.24, 0.48]
     }
 }
 
@@ -12669,34 +13980,46 @@ fn add_window_neon_sign_mesh(
 ) {
     let [x, y] = instance.center_meters;
     let z = instance.z_meters;
-    geometry.world_box_with_surface_response(
-        [x - 0.84, y - 0.08, z - 0.36],
-        [x + 0.84, y + 0.035, z + 0.36],
-        [0.035, 0.026, 0.046, 1.0],
+    geometry.world_oriented_rect_with_surface_response(
+        [x, y - 0.082, z],
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.86, 0.38],
+        [0.034, 0.028, 0.038, 0.9],
         WINDOW_SURFACE_RESPONSE_METAL,
     );
+    for edge_z in [z - 0.35, z + 0.35] {
+        geometry.world_cylinder_between_with_surface_response(
+            [x - 0.82, y - 0.096, edge_z],
+            [x + 0.82, y - 0.096, edge_z],
+            0.018,
+            8,
+            [0.055, 0.05, 0.056, 0.92],
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
+    }
     geometry.world_cylinder_between_with_surface_response(
         [x - 0.62, y - 0.095, z + 0.19],
         [x + 0.62, y - 0.095, z + 0.19],
         0.033,
-        12,
-        window_scale_color(instance.color, 1.25),
+        10,
+        window_with_alpha(window_scale_color(instance.color, 0.66), 0.5),
         WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
     );
     geometry.world_cylinder_between_with_surface_response(
         [x - 0.58, y - 0.1, z - 0.02],
         [x + 0.58, y - 0.1, z - 0.02],
         0.026,
-        12,
-        [0.35, 0.9, 1.0, 1.0],
+        10,
+        [0.34, 0.54, 0.58, 0.46],
         WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
     );
     geometry.world_cylinder_between_with_surface_response(
         [x - 0.62, y - 0.095, z - 0.23],
         [x + 0.62, y - 0.095, z - 0.23],
         0.024,
-        12,
-        [1.0, 0.95, 0.55, 1.0],
+        10,
+        [0.74, 0.62, 0.34, 0.5],
         WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
     );
     for side_x in [x - 0.71, x + 0.71] {
@@ -12704,8 +14027,8 @@ fn add_window_neon_sign_mesh(
             [side_x, y - 0.092, z - 0.28],
             [side_x, y - 0.092, z + 0.28],
             0.02,
-            10,
-            [0.8, 0.25, 1.0, 1.0],
+            8,
+            [0.48, 0.24, 0.58, 0.42],
             WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
         );
     }
@@ -12714,7 +14037,7 @@ fn add_window_neon_sign_mesh(
         instance.billboard_right,
         1.9,
         0.9,
-        [0.98, 0.24, 0.72, 0.34],
+        [0.62, 0.28, 0.42, 0.16],
         WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
     );
 
@@ -12725,7 +14048,7 @@ fn add_window_neon_sign_mesh(
             instance.billboard_right,
             2.35 + charge * 0.42,
             1.08 + charge * 0.18,
-            [1.0, 0.38, 0.82, (0.16 + charge * 0.26).clamp(0.0, 0.52)],
+            [0.72, 0.32, 0.52, (0.08 + charge * 0.16).clamp(0.0, 0.32)],
             WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
         );
         for spark in 0..4 {
@@ -12735,7 +14058,7 @@ fn add_window_neon_sign_mesh(
                 normalize3([0.22, 0.0, 0.16 - spark as f32 * 0.03]),
                 [0.0, 1.0, 0.0],
                 [0.065 + charge * 0.025, 0.004],
-                [1.0, 0.86, 0.32, (0.3 + charge * 0.46).clamp(0.0, 0.86)],
+                [0.9, 0.74, 0.36, (0.18 + charge * 0.28).clamp(0.0, 0.58)],
                 WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE,
             );
         }
@@ -12743,10 +14066,12 @@ fn add_window_neon_sign_mesh(
 
     let heat = instance.heat.clamp(0.0, 1.0);
     if heat > 0.05 {
-        geometry.world_box_with_surface_response(
-            [x - 0.72, y + 0.036, z - 0.35],
-            [x + 0.72, y + 0.07, z - 0.29],
-            [0.42, 0.16, 0.06, (0.35 + heat * 0.42).clamp(0.0, 0.84)],
+        geometry.world_oriented_rect_with_surface_response(
+            [x, y + 0.04, z - 0.32],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.72, 0.032],
+            [0.54, 0.28, 0.12, (0.22 + heat * 0.24).clamp(0.0, 0.52)],
             WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE,
         );
     }
@@ -12773,7 +14098,7 @@ fn add_window_security_camera_mesh(
         WINDOW_SURFACE_RESPONSE_METAL,
         WindowMicroDetailRecipe {
             seed: 7_000,
-            density: 0.62,
+            density: 0.34,
         },
         state_detail,
     );
@@ -12794,33 +14119,35 @@ fn add_window_security_camera_mesh(
         WINDOW_SURFACE_RESPONSE_METAL,
     );
 
-    geometry.world_micro_detailed_box_with_surface_state_detail(
-        [x - 0.1, y - 0.18, z - 0.13],
-        [x + 0.27, y + 0.18, z + 0.12],
+    geometry.world_ellipsoid_with_surface_response(
+        [x + 0.08, y, z - 0.005],
+        [0.29, 0.18, 0.14],
+        6,
+        12,
         housing,
         WINDOW_SURFACE_RESPONSE_METAL,
-        WindowMicroDetailRecipe {
-            seed: 7_001,
-            density: 0.74,
-        },
-        state_detail,
     );
-    geometry.world_micro_detailed_box_with_surface_state_detail(
-        [x - 0.13, y - 0.23, z + 0.09],
-        [x + 0.32, y + 0.23, z + 0.16],
-        [0.04, 0.044, 0.05, 1.0],
+    geometry.world_oriented_rect_with_surface_response(
+        [x + 0.1, y, z + 0.14],
+        [0.0, 1.0, 0.0],
+        normalize3([0.18, 0.0, 1.0]),
+        [0.25, 0.065],
+        [0.038, 0.042, 0.046, 0.9],
         WINDOW_SURFACE_RESPONSE_METAL,
-        WindowMicroDetailRecipe {
-            seed: 7_002,
-            density: 0.68,
-        },
-        state_detail,
+    );
+    geometry.world_ellipse_ring_with_surface_response(
+        [x + 0.08, y, z - 0.005],
+        [0.19, 0.105],
+        [0.31, 0.185],
+        14,
+        [0.032, 0.036, 0.04, 0.62],
+        WINDOW_SURFACE_RESPONSE_METAL,
     );
     geometry.world_cylinder_between_with_surface_response(
         [x + 0.2, y, z - 0.005],
         [x + 0.37, y, z - 0.005],
         0.08,
-        16,
+        12,
         [0.008, 0.014, 0.018, 1.0],
         WINDOW_SURFACE_RESPONSE_GLASS,
     );
@@ -12829,14 +14156,14 @@ fn add_window_security_camera_mesh(
         [0.0, 1.0, 0.0],
         [0.0, 0.0, 1.0],
         [0.082, 0.082],
-        [0.08, 0.7, 1.0, 0.72],
+        [0.18, 0.46, 0.56, 0.46],
         WINDOW_SURFACE_RESPONSE_GLASS,
     );
     geometry.world_ellipse_ring_with_surface_response(
         [x + 0.378, y, z - 0.005],
         [0.06, 0.06],
         [0.1, 0.1],
-        18,
+        14,
         [0.55, 0.68, 0.74, 1.0],
         WINDOW_SURFACE_RESPONSE_METAL,
     );
@@ -12845,7 +14172,7 @@ fn add_window_security_camera_mesh(
         [0.0, 1.0, 0.0],
         [0.0, 0.0, 1.0],
         [0.018, 0.012],
-        [1.0, 0.12, 0.06, (0.46 + charge * 0.36).clamp(0.0, 0.9)],
+        [0.8, 0.38, 0.16, (0.26 + charge * 0.28).clamp(0.0, 0.62)],
         WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE,
     );
 
@@ -12890,7 +14217,7 @@ fn add_window_security_camera_mesh(
             instance.billboard_right,
             0.56,
             0.34,
-            [0.18, 0.82, 1.0, (0.12 + charge * 0.22).clamp(0.0, 0.4)],
+            [0.24, 0.48, 0.56, (0.08 + charge * 0.14).clamp(0.0, 0.28)],
             WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
         );
     }
@@ -12922,7 +14249,7 @@ fn add_window_service_door_mesh(
         WINDOW_SURFACE_RESPONSE_METAL,
         WindowMicroDetailRecipe {
             seed: 7_100,
-            density: 0.82,
+            density: 0.38,
         },
         state_detail,
     );
@@ -12933,7 +14260,7 @@ fn add_window_service_door_mesh(
         WINDOW_SURFACE_RESPONSE_METAL,
         WindowMicroDetailRecipe {
             seed: 7_101,
-            density: 0.58,
+            density: 0.32,
         },
         state_detail,
     );
@@ -12944,7 +14271,7 @@ fn add_window_service_door_mesh(
         WINDOW_SURFACE_RESPONSE_METAL,
         WindowMicroDetailRecipe {
             seed: 7_102,
-            density: 0.58,
+            density: 0.32,
         },
         state_detail,
     );
@@ -12955,7 +14282,7 @@ fn add_window_service_door_mesh(
         WINDOW_SURFACE_RESPONSE_METAL,
         WindowMicroDetailRecipe {
             seed: 7_103,
-            density: 0.58,
+            density: 0.32,
         },
         state_detail,
     );
@@ -12966,43 +14293,37 @@ fn add_window_service_door_mesh(
         WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
         WindowMicroDetailRecipe {
             seed: 7_104,
-            density: 0.5,
+            density: 0.28,
         },
         state_detail,
     );
 
     for rib in 0..5 {
         let rib_z = z + 0.42 + rib as f32 * 0.34;
-        geometry.world_micro_detailed_box_with_surface_state_detail(
-            [x + 0.025, y - 0.72, rib_z],
-            [x + 0.085, y + 0.72, rib_z + 0.045],
+        geometry.world_cylinder_between_with_surface_response(
+            [x + 0.055, y - 0.72, rib_z + 0.02],
+            [x + 0.055, y + 0.72, rib_z + 0.02],
+            0.026,
+            7,
             [0.055, 0.062, 0.068, 1.0],
             WINDOW_SURFACE_RESPONSE_METAL,
-            WindowMicroDetailRecipe {
-                seed: 7_110 + rib,
-                density: 0.62,
-            },
-            state_detail,
         );
     }
 
-    geometry.world_micro_detailed_box_with_surface_state_detail(
-        [x + 0.05, y + 0.42, z + 0.84],
-        [x + 0.12, y + 0.68, z + 1.18],
+    geometry.world_ellipsoid_with_surface_response(
+        [x + 0.086, y + 0.55, z + 1.01],
+        [0.044, 0.145, 0.19],
+        5,
+        9,
         [0.018, 0.022, 0.026, 1.0],
         WINDOW_SURFACE_RESPONSE_METAL,
-        WindowMicroDetailRecipe {
-            seed: 7_120,
-            density: 0.72,
-        },
-        state_detail,
     );
     geometry.world_oriented_rect_with_surface_response(
         [x + 0.124, y + 0.55, z + 1.08],
         [0.0, 1.0, 0.0],
         [0.0, 0.0, 1.0],
         [0.075, 0.035],
-        [0.12, 1.0, 0.68, (0.2 + charge * 0.42).clamp(0.0, 0.72)],
+        [0.32, 0.68, 0.48, (0.12 + charge * 0.24).clamp(0.0, 0.42)],
         WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
     );
     geometry.world_cylinder_between_with_surface_response(
@@ -13021,7 +14342,21 @@ fn add_window_service_door_mesh(
             [0.0, 1.0, 0.32],
             [0.0, -0.22, 1.0],
             [0.33, 0.028],
-            [0.92, 0.66, 0.08, 0.78],
+            [0.78, 0.58, 0.16, 0.52],
+            WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+        );
+    }
+
+    for (patch_y, patch_z, radii) in [
+        (y - 0.52, z + 0.18, [0.05, 0.18, 0.08]),
+        (y + 0.38, z + 0.28, [0.04, 0.15, 0.06]),
+    ] {
+        geometry.world_ellipsoid_with_surface_response(
+            [x + 0.082, patch_y, patch_z],
+            radii,
+            4,
+            8,
+            [0.12, 0.07, 0.036, 0.58],
             WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
         );
     }
@@ -13079,7 +14414,7 @@ fn add_window_market_stall_mesh(
         WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
         WindowMicroDetailRecipe {
             seed: 7_200,
-            density: 0.86,
+            density: 0.36,
         },
         state_detail,
     );
@@ -13090,7 +14425,7 @@ fn add_window_market_stall_mesh(
         WINDOW_SURFACE_RESPONSE_METAL,
         WindowMicroDetailRecipe {
             seed: 7_201,
-            density: 0.62,
+            density: 0.28,
         },
         state_detail,
     );
@@ -13128,8 +14463,8 @@ fn add_window_market_stall_mesh(
         [x - 0.78, y - 0.52, z + 1.45],
         [x + 0.78, y - 0.52, z + 1.45],
         0.026,
-        12,
-        [1.0, 0.32, 0.66, 0.92],
+        10,
+        [0.72, 0.26, 0.48, 0.42],
         WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
     );
     if charge > 0.05 {
@@ -13138,12 +14473,12 @@ fn add_window_market_stall_mesh(
             instance.billboard_right,
             1.92,
             0.32,
-            [1.0, 0.22, 0.7, (0.1 + charge * 0.26).clamp(0.0, 0.44)],
+            [0.62, 0.26, 0.42, (0.06 + charge * 0.14).clamp(0.0, 0.24)],
             WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON,
         );
     }
 
-    for (index, crate_offset) in [
+    for (index, goods_offset) in [
         [-0.58, 0.2, 0.0],
         [-0.16, 0.18, 0.04],
         [0.36, 0.21, 0.0],
@@ -13152,32 +14487,73 @@ fn add_window_market_stall_mesh(
     .iter()
     .enumerate()
     {
-        let crate_center = [
-            x + crate_offset[0],
-            y + crate_offset[1],
-            z + 0.78 + crate_offset[2],
+        let goods_center = [
+            x + goods_offset[0],
+            y + goods_offset[1],
+            z + 0.78 + goods_offset[2],
         ];
-        let half_x = 0.17 + index as f32 * 0.018;
-        let half_y = 0.13 + (index % 2) as f32 * 0.03;
-        let half_z = 0.11 + (index % 3) as f32 * 0.018;
-        geometry.world_micro_detailed_box_with_surface_state_detail(
-            [
-                crate_center[0] - half_x,
-                crate_center[1] - half_y,
-                crate_center[2] - half_z,
-            ],
-            [
-                crate_center[0] + half_x,
-                crate_center[1] + half_y,
-                crate_center[2] + half_z,
-            ],
-            [0.105, 0.082, 0.052, 1.0],
+        if index % 2 == 0 {
+            geometry.world_ellipsoid_with_surface_response(
+                goods_center,
+                [
+                    0.21 + index as f32 * 0.018,
+                    0.13 + (index % 3) as f32 * 0.018,
+                    0.1 + index as f32 * 0.01,
+                ],
+                5,
+                10,
+                [0.16, 0.1, 0.052, 0.95],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+            geometry.world_cylinder_between_with_surface_response(
+                [
+                    goods_center[0] - 0.17,
+                    goods_center[1],
+                    goods_center[2] + 0.06,
+                ],
+                [
+                    goods_center[0] + 0.17,
+                    goods_center[1],
+                    goods_center[2] + 0.04,
+                ],
+                0.012,
+                5,
+                [0.05, 0.038, 0.026, 0.82],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        } else {
+            geometry.world_cylinder_between_with_surface_response(
+                [goods_center[0], goods_center[1], goods_center[2] - 0.12],
+                [goods_center[0], goods_center[1], goods_center[2] + 0.12],
+                0.13,
+                10,
+                [0.12, 0.074, 0.042, 0.94],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+            geometry.world_ellipse_ring_with_surface_response(
+                [goods_center[0], goods_center[1], goods_center[2] + 0.125],
+                [0.07, 0.07],
+                [0.13, 0.13],
+                10,
+                [0.05, 0.04, 0.03, 0.84],
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+        }
+    }
+
+    for (produce_x, produce_y, color) in [
+        (-0.38, -0.04, [0.28, 0.09, 0.045, 0.9]),
+        (-0.22, -0.08, [0.24, 0.16, 0.05, 0.9]),
+        (0.08, -0.06, [0.16, 0.22, 0.08, 0.9]),
+        (0.24, -0.1, [0.32, 0.14, 0.06, 0.9]),
+    ] {
+        geometry.world_ellipsoid_with_surface_response(
+            [x + produce_x, y + produce_y, z + 0.82],
+            [0.07, 0.045, 0.04],
+            4,
+            8,
+            color,
             WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
-            WindowMicroDetailRecipe {
-                seed: 7_220 + index as u64,
-                density: 0.78,
-            },
-            state_detail,
         );
     }
 
@@ -14081,6 +15457,37 @@ mod fs {
                 return mix(mix(a, b, smooth_local.x), mix(c, d, smooth_local.x), smooth_local.y);
             }
 
+            float fbm_noise(vec2 value) {
+                float sum = 0.0;
+                float amplitude = 0.5;
+                sum += value_noise(value) * amplitude;
+                value = value * mat2(1.62, 1.11, -1.11, 1.62) + vec2(7.1, 3.4);
+                amplitude *= 0.5;
+                sum += value_noise(value) * amplitude;
+                value = value * mat2(1.47, -0.83, 0.83, 1.47) + vec2(2.6, 11.9);
+                amplitude *= 0.5;
+                sum += value_noise(value) * amplitude;
+                return sum / 0.875;
+            }
+
+            float ridged_noise(vec2 value) {
+                float ridge = 1.0 - abs(value_noise(value) * 2.0 - 1.0);
+                float fine = 1.0 - abs(value_noise(value * 2.37 + vec2(5.8, 1.7)) * 2.0 - 1.0);
+                return clamp(ridge * 0.68 + fine * 0.32, 0.0, 1.0);
+            }
+
+            float detail_lod_weight(float view_depth) {
+                return clamp(1.0 - smoothstep(9.0, 24.0, max(view_depth, 0.0)), 0.0, 1.0);
+            }
+
+            vec2 warped_surface_uv(vec2 uv, float seed, float cache_page, float view_detail) {
+                vec2 warp = vec2(
+                    fbm_noise(uv * 0.74 + vec2(seed * 0.07, cache_page * 0.011)),
+                    fbm_noise(uv.yx * 0.68 + vec2(3.1 + cache_page * 0.017, seed * 0.09))
+                ) - vec2(0.5);
+                return uv + warp * (0.24 + view_detail * 0.2);
+            }
+
             vec2 surface_uv(vec3 position, vec3 normal_dir) {
                 vec3 axis = abs(normal_dir);
                 if (axis.z >= axis.x && axis.z >= axis.y) {
@@ -14097,7 +15504,8 @@ mod fs {
                 vec3 position,
                 vec4 surface_response,
                 vec4 material_detail,
-                vec4 generated_cache
+                vec4 generated_cache,
+                float view_depth
             ) {
                 float roughness = clamp(surface_response.x, 0.04, 1.0);
                 float emissive = clamp(surface_response.w, 0.0, 1.0);
@@ -14107,24 +15515,29 @@ mod fs {
                 float relief = clamp(material_detail.w, 0.0, 1.0);
                 float cache_normal = clamp(generated_cache.y, 0.0, 1.0);
                 float cache_page = generated_cache.w * 4096.0;
+                float view_detail = detail_lod_weight(view_depth);
                 float amplitude = (0.012 + roughness * 0.042 + relief * 0.048)
                     * (0.58 + state_intensity * 0.72)
                     * (1.0 - emissive * 0.72)
+                    * (0.52 + view_detail * 0.48)
                     * (0.82 + cache_normal * 0.5);
                 if (amplitude <= 0.002) {
                     return normal_dir;
                 }
 
-                vec2 uv = surface_uv(position, normal_dir);
+                vec2 uv = warped_surface_uv(surface_uv(position, normal_dir), detail_seed, cache_page, view_detail);
                 vec3 tangent = normalize(abs(normal_dir.z) < 0.92 ? cross(vec3(0.0, 0.0, 1.0), normal_dir) : vec3(1.0, 0.0, 0.0));
                 vec3 bitangent = normalize(cross(normal_dir, tangent));
-                float n0 = value_noise(uv * 12.0 * detail_scale + vec2(detail_seed + cache_page * 0.013, position.z * 0.31));
-                float n1 = value_noise(uv.yx * 18.0 * detail_scale + vec2(4.7 + detail_seed, 1.3 + cache_page * 0.017));
-                float cache_grain = value_noise(uv * 44.0 * detail_scale + vec2(cache_page * 0.031, cache_page * 0.047));
+                float broad = fbm_noise(uv * 2.8 * detail_scale + vec2(detail_seed + cache_page * 0.013, position.z * 0.31));
+                float n0 = fbm_noise(uv * 12.0 * detail_scale + vec2(detail_seed + cache_page * 0.019, position.z * 0.31));
+                float n1 = ridged_noise(uv.yx * 16.0 * detail_scale + vec2(4.7 + detail_seed, 1.3 + cache_page * 0.017));
+                float cache_grain = view_detail > 0.04
+                    ? value_noise(uv * 46.0 * detail_scale + vec2(cache_page * 0.031, cache_page * 0.047))
+                    : 0.5;
                 return normalize(
                     normal_dir
-                    + tangent * ((n0 - 0.5) * amplitude + (cache_grain - 0.5) * amplitude * cache_normal * 0.38)
-                    + bitangent * ((n1 - 0.5) * amplitude + (cache_grain - 0.5) * amplitude * cache_normal * 0.22)
+                    + tangent * ((broad - 0.5) * amplitude * 0.42 + (n0 - 0.5) * amplitude * view_detail * 0.64 + (cache_grain - 0.5) * amplitude * cache_normal * view_detail * 0.34)
+                    + bitangent * ((n1 - 0.5) * amplitude * (0.38 + view_detail * 0.42) + (cache_grain - 0.5) * amplitude * cache_normal * view_detail * 0.2)
                 );
             }
 
@@ -14134,7 +15547,8 @@ mod fs {
                 vec3 normal_dir,
                 vec4 surface_response,
                 vec4 material_detail,
-                vec4 generated_cache
+                vec4 generated_cache,
+                float view_depth
             ) {
                 float roughness = clamp(surface_response.x, 0.04, 1.0);
                 float metallic = clamp(surface_response.y, 0.0, 1.0);
@@ -14148,40 +15562,45 @@ mod fs {
                 float cache_height = clamp(generated_cache.y, 0.0, 1.0);
                 float cache_mask = clamp(generated_cache.z, 0.0, 1.0);
                 float cache_page = generated_cache.w * 4096.0;
-                vec2 uv = surface_uv(position, normal_dir);
+                float view_detail = detail_lod_weight(view_depth);
+                vec2 uv = warped_surface_uv(surface_uv(position, normal_dir), detail_seed, cache_page, view_detail);
 
-                float low = value_noise(uv * 0.72 * detail_scale + vec2(detail_seed));
-                float mid = value_noise(uv * 4.8 * detail_scale + vec2(1.7 + detail_seed, 6.1));
-                float high = value_noise(uv * 21.0 * detail_scale + vec2(position.z * 0.19, detail_seed));
+                float low = fbm_noise(uv * 0.72 * detail_scale + vec2(detail_seed));
+                float mid = fbm_noise(uv * 4.8 * detail_scale + vec2(1.7 + detail_seed, 6.1));
+                float high = view_detail > 0.04
+                    ? fbm_noise(uv * 21.0 * detail_scale + vec2(position.z * 0.19, detail_seed))
+                    : 0.5;
                 vec3 color = base_color * (0.84 + low * 0.1 + mid * (0.06 + state_intensity * 0.07));
-                float cache_tile = value_noise(uv * (2.0 + detail_scale * 0.4) + vec2(cache_page * 0.011, cache_page * 0.023));
-                float cache_grain = value_noise(uv * (36.0 + detail_scale * 9.0) + vec2(cache_page * 0.071, detail_seed));
+                float cache_tile = fbm_noise(uv * (2.0 + detail_scale * 0.4) + vec2(cache_page * 0.011, cache_page * 0.023));
+                float cache_grain = view_detail > 0.04
+                    ? value_noise(uv * (36.0 + detail_scale * 9.0) + vec2(cache_page * 0.071, detail_seed))
+                    : cache_tile;
                 color *= 0.96 + (cache_tile - 0.5) * cache_albedo * 0.18 + (cache_grain - 0.5) * cache_albedo * 0.08;
                 float cache_height_shadow = smoothstep(0.58, 0.92, cache_grain) * cache_height * roughness * (1.0 - emissive);
                 color = mix(color, color * vec3(0.68, 0.7, 0.66), cache_height_shadow * 0.18);
-                float cache_crack = value_noise(vec2(uv.x * 18.0 * detail_scale + cache_page * 0.031, uv.y * 1.2 + detail_seed));
+                float cache_crack = ridged_noise(vec2(uv.x * 13.0 * detail_scale + cache_page * 0.031, uv.y * 1.35 + detail_seed));
                 float generated_mask = smoothstep(0.74, 0.98, cache_crack)
                     * cache_mask
                     * (roughness * 0.72 + wetness * 0.36 + metallic * 0.26)
                     * (1.0 - emissive);
                 color = mix(color, color * vec3(0.52, 0.55, 0.5), generated_mask * 0.28);
 
-                float pore_mask = smoothstep(0.58, 0.94, high) * roughness * (0.55 + relief * 0.65) * (1.0 - emissive);
+                float pore_mask = smoothstep(0.58, 0.94, high) * roughness * (0.55 + relief * 0.65) * (1.0 - emissive) * view_detail;
                 color = mix(color, color * vec3(0.58, 0.6, 0.57), pore_mask * 0.34);
 
                 float grime = smoothstep(0.68, 0.96, mid) * roughness * (0.45 + state_intensity * 0.75) * (1.0 - emissive);
                 color = mix(color, color * vec3(0.62, 0.66, 0.6), grime * 0.24);
 
-                float scratch_noise = value_noise(vec2(uv.x * 28.0 * detail_scale + uv.y * 2.0, uv.y * 3.5 + detail_seed));
-                float scratch_mask = smoothstep(0.82, 0.99, scratch_noise) * (metallic * 0.9 + roughness * 0.25 + relief * 0.18) * (1.0 - emissive);
+                float scratch_noise = ridged_noise(vec2(uv.x * 24.0 * detail_scale + uv.y * 2.0, uv.y * 3.5 + detail_seed));
+                float scratch_mask = smoothstep(0.82, 0.99, scratch_noise) * (metallic * 0.9 + roughness * 0.25 + relief * 0.18) * (1.0 - emissive) * view_detail;
                 color += vec3(0.11, 0.12, 0.12) * scratch_mask;
 
-                float rust_noise = value_noise(uv * 7.5 * detail_scale + vec2(9.2 + detail_seed, 2.4));
+                float rust_noise = fbm_noise(uv * 7.5 * detail_scale + vec2(9.2 + detail_seed, 2.4));
                 float rust_mask = smoothstep(0.54, 0.92, rust_noise) * metallic * state_intensity * (1.0 - wetness * 0.42) * (1.0 - emissive);
                 vec3 rust_color = color * vec3(0.68, 0.42, 0.24) + vec3(0.12, 0.035, 0.008);
                 color = mix(color, rust_color, rust_mask * (0.26 + relief * 0.28));
 
-                float soot_noise = value_noise(uv * 13.0 * detail_scale + vec2(3.3, 11.7 + detail_seed));
+                float soot_noise = fbm_noise(uv * 13.0 * detail_scale + vec2(3.3, 11.7 + detail_seed));
                 float soot_mask = smoothstep(0.7, 0.98, soot_noise) * roughness * state_intensity * (1.0 - emissive);
                 color = mix(color, color * vec3(0.34, 0.32, 0.3), soot_mask * 0.22);
 
@@ -14190,15 +15609,21 @@ mod fs {
 
                 float fx = fract(uv.x * 0.48 * max(detail_scale, 0.35) + detail_seed * 0.07);
                 float fy = fract(uv.y * 0.48 * max(detail_scale, 0.35) + detail_seed * 0.11);
-                float grid_x = 1.0 - smoothstep(0.012, 0.04, min(fx, 1.0 - fx));
-                float grid_y = 1.0 - smoothstep(0.012, 0.04, min(fy, 1.0 - fy));
-                float panel_mask = max(grid_x, grid_y) * roughness * (1.0 - emissive) * 0.18;
+                float seam_breakup = smoothstep(0.18, 0.86, fbm_noise(uv * 1.9 + vec2(cache_page * 0.041, detail_seed)));
+                float grid_x = 1.0 - smoothstep(0.01, 0.052, min(fx, 1.0 - fx));
+                float grid_y = 1.0 - smoothstep(0.01, 0.052, min(fy, 1.0 - fy));
+                float panel_mask = max(grid_x, grid_y) * roughness * (1.0 - emissive) * 0.1 * seam_breakup;
                 color = mix(color, color * vec3(0.72, 0.74, 0.72), panel_mask);
 
                 float vertical_surface = clamp(1.0 - abs(normal_dir.z), 0.0, 1.0);
-                float streak_noise = value_noise(vec2(uv.x * 1.2 * detail_scale + detail_seed, uv.y * 9.0 + position.z * 1.3));
+                float streak_noise = ridged_noise(vec2(uv.x * 1.2 * detail_scale + detail_seed, uv.y * 8.2 + position.z * 1.3));
                 float streak_mask = smoothstep(0.74, 0.98, streak_noise) * vertical_surface * (wetness + roughness * 0.32) * (1.0 - emissive);
                 color = mix(color, color * vec3(0.54, 0.6, 0.62) + vec3(0.02, 0.04, 0.045), streak_mask * 0.22);
+
+                float ground_contact = smoothstep(0.72, 0.02, position.z) * roughness * (1.0 - emissive);
+                float packed_dirt = fbm_noise(uv * 9.5 + vec2(detail_seed, cache_page * 0.027));
+                vec3 earth = vec3(0.18, 0.12, 0.064) * (0.6 + packed_dirt * 0.54);
+                color = mix(color, color * vec3(0.72, 0.66, 0.54) + earth, ground_contact * smoothstep(0.42, 0.9, packed_dirt) * 0.2);
 
                 color = mix(color, color * vec3(0.82, 0.86, 0.9) + vec3(0.018, 0.035, 0.045), wetness * 0.08 * (1.0 - emissive));
                 return max(color, vec3(0.0));
@@ -14238,7 +15663,8 @@ mod fs {
                     in_world_position,
                     in_surface_response,
                     in_material_detail,
-                    in_generated_cache
+                    in_generated_cache,
+                    in_view_depth
                 );
                 float roughness = clamp(in_surface_response.x, 0.04, 1.0);
                 float metallic = clamp(in_surface_response.y, 0.0, 1.0);
@@ -14250,15 +15676,17 @@ mod fs {
                     normal_dir,
                     in_surface_response,
                     in_material_detail,
-                    in_generated_cache
+                    in_generated_cache,
+                    in_view_depth
                 );
 
-                vec3 key_dir = normalize(vec3(-0.28, -0.38, 0.88));
+                vec3 key_dir = normalize(vec3(-0.34, -0.42, 0.84));
                 float direct = max(dot(normal_dir, key_dir), 0.0);
-                float back = max(dot(-normal_dir, key_dir), 0.0) * 0.28;
-                float diffuse = 0.28 + max(direct, back) * mix(0.78, 0.5, metallic);
-                vec3 sky_fill = vec3(0.34, 0.42, 0.5) * (0.18 + max(normal_dir.z, 0.0) * 0.2);
-                vec3 lit = surface_color * diffuse + surface_color * sky_fill;
+                float back = max(dot(-normal_dir, key_dir), 0.0) * 0.22;
+                float diffuse = 0.34 + max(direct, back) * mix(0.82, 0.54, metallic);
+                vec3 sun_warmth = vec3(1.0, 0.83, 0.58) * direct * 0.16;
+                vec3 sky_fill = vec3(0.44, 0.53, 0.62) * (0.22 + max(normal_dir.z, 0.0) * 0.26);
+                vec3 lit = surface_color * diffuse + surface_color * sky_fill + surface_color * sun_warmth;
 
                 float spec_power = mix(96.0, 18.0, roughness);
                 float spec_amount = (1.0 - roughness) * (0.16 + wetness * 0.72 + metallic * 0.42);
@@ -14270,34 +15698,34 @@ mod fs {
                     in_world_position,
                     normal_dir,
                     vec3(1.0, 3.0, 2.45),
-                    vec3(1.0, 0.18, 0.72),
+                    vec3(0.78, 0.22, 0.48),
                     8.5,
-                    0.22,
+                    0.14,
                     wetness
                 );
                 vec3 cyan = point_light(
                     in_world_position,
                     normal_dir,
                     vec3(-1.5, 0.5, 0.72),
-                    vec3(0.25, 0.82, 1.0),
+                    vec3(0.28, 0.58, 0.68),
                     5.2,
-                    0.14,
+                    0.1,
                     wetness
                 );
                 vec3 amber = point_light(
                     in_world_position,
                     normal_dir,
                     vec3(-4.95, -6.9, 1.45),
-                    vec3(1.0, 0.5, 0.12),
+                    vec3(0.9, 0.55, 0.24),
                     4.2,
-                    0.18,
+                    0.14,
                     wetness
                 );
                 float upward_surface = smoothstep(0.38, 0.92, normal_dir.z);
                 float wet_ground = upward_surface * (1.0 - smoothstep(0.03, 0.22, abs(in_world_position.z)));
-                lit += magenta * (0.1 + wet_ground * 0.28);
-                lit += cyan * (0.07 + wet_ground * 0.2);
-                lit += amber * 0.18;
+                lit += magenta * (0.07 + wet_ground * 0.18);
+                lit += cyan * (0.05 + wet_ground * 0.14);
+                lit += amber * 0.16;
                 if (frame.dynamic_light_position_radius.w > 0.01 && frame.dynamic_light_color_intensity.w > 0.01) {
                     vec3 dynamic = point_light(
                         in_world_position,
@@ -14896,7 +16324,7 @@ mod tests {
                 && (dot3(vertex.normal, vertex.normal).sqrt() - 1.0).abs() < 0.001
         }));
         assert!(geometry.vertices.iter().any(|vertex| {
-            vertex.color == [1.0, 0.18, 0.76, 0.82]
+            vertex.color == [0.82, 0.24, 0.56, 0.52]
                 && vertex.surface_response == WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON
         }));
         assert!(geometry.vertices.iter().any(|vertex| {
@@ -14976,7 +16404,7 @@ mod tests {
         }));
         assert!(geometry.vertices.iter().any(|vertex| {
             vertex.position[0] > 2.0
-                && vertex.color == [0.86, 0.12, 0.72, 0.72]
+                && vertex.color == [0.74, 0.16, 0.48, 0.44]
                 && vertex.surface_response == WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON
         }));
         assert!(geometry.vertices.iter().any(|vertex| {
@@ -14993,9 +16421,9 @@ mod tests {
         }));
         assert!(geometry.vertices.iter().any(|vertex| {
             vertex.position[0] > 2.0
-                && vertex.color[0] == 1.0
-                && vertex.color[1] == 0.22
-                && vertex.color[2] == 0.82
+                && vertex.color[0] == 0.82
+                && vertex.color[1] == 0.24
+                && vertex.color[2] == 0.56
                 && vertex.surface_response == WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON
         }));
         assert!(!geometry.vertices.iter().any(|vertex| {
@@ -15760,6 +17188,11 @@ mod tests {
         geometry.add_window_alley_environment();
 
         assert!(geometry.vertices.len() > 3_200);
+        assert!(
+            geometry.vertices.len() < 22_000,
+            "alley environment detail should stay bounded for smooth frame times, got {} vertices",
+            geometry.vertices.len()
+        );
         assert_eq!(geometry.vertices.len() % 4, 0);
         assert_eq!(geometry.indices.len(), geometry.vertices.len() / 4 * 6);
         assert!(geometry.vertices.iter().all(|vertex| {
@@ -15773,7 +17206,7 @@ mod tests {
             vertex.position[2] > 2.5 && vertex.color == [0.025, 0.028, 0.032, 1.0]
         }));
         assert!(geometry.vertices.iter().any(|vertex| {
-            vertex.position[0].abs() <= 0.04 && vertex.color == [0.12, 0.18, 0.21, 0.58]
+            vertex.position[0].abs() <= 0.105 && vertex.color == [0.18, 0.18, 0.145, 0.34]
         }));
         assert!(geometry.vertices.iter().any(|vertex| {
             vertex.color == [0.055, 0.06, 0.068, 1.0] && vertex.position[2] > 3.0
@@ -15813,13 +17246,63 @@ mod tests {
                 .any(|vertex| vertex.color == [0.04, 0.18, 0.2, 0.32])
         );
         assert!(geometry.vertices.iter().any(|vertex| {
-            vertex.position[0].abs() > 5.0 && vertex.color == [0.08, 0.72, 0.88, 0.78]
+            vertex.position[0].abs() > 5.0 && vertex.color == [0.16, 0.56, 0.66, 0.46]
         }));
         assert!(
             geometry.vertices.iter().any(|vertex| {
-                vertex.position[2] > 2.0 && vertex.color == [0.7, 0.14, 1.0, 1.0]
+                vertex.position[2] > 2.0 && vertex.color == [0.58, 0.2, 0.76, 0.62]
             })
         );
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.surface_response == WINDOW_SURFACE_RESPONSE_ROUGH_DIRT
+                && vertex.color == [0.012, 0.011, 0.01, 0.92]
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == [0.76, 0.62, 0.42, 0.12]
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_DEFAULT
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == [0.28, 0.16, 0.07, 0.9]
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_ROUGH_DIRT
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == [0.12, 0.13, 0.118, 0.95]
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_METAL
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == [0.86, 0.72, 0.42, 0.28]
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == [0.18, 0.21, 0.19, 0.96]
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_METAL
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == [0.18, 0.31, 0.34, 0.46]
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_GLASS
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == [0.78, 0.64, 0.38, 0.34]
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == [0.018, 0.015, 0.012, 0.78]
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_ROUGH_DIRT
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color[0] == 0.07
+                && vertex.color[1] == 0.056
+                && vertex.color[2] == 0.038
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_ROUGH_DIRT
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == [0.052, 0.058, 0.052, 0.42]
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_METAL
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == [0.62, 0.58, 0.42, 0.38]
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_METAL
+        }));
         assert!(geometry.vertices.iter().any(|vertex| {
             vertex.position[0].abs() > 5.0 && vertex.color[3] < 0.5 && vertex.color[0] <= 0.08
         }));
@@ -15834,7 +17317,7 @@ mod tests {
         }));
         assert!(geometry.vertices.iter().any(|vertex| {
             vertex.position[2] > 4.0
-                && vertex.color[3] > 0.5
+                && vertex.color[3] > 0.3
                 && vertex.surface_response == WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON
         }));
     }
@@ -15848,16 +17331,18 @@ mod tests {
         first.add_window_alley_weather(1, camera);
         second.add_window_alley_weather(40, camera);
 
-        assert!(first.vertices.len() > 1_000);
+        assert!(first.vertices.len() > 780);
         assert_eq!(first.vertices.len(), second.vertices.len());
         assert_eq!(first.indices.len(), first.vertices.len() / 4 * 6);
         assert!(first.vertices.iter().all(|vertex| {
             vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
                 && (dot3(vertex.normal, vertex.normal).sqrt() - 1.0).abs() < 0.001
         }));
-        assert!(first.vertices.iter().any(|vertex| {
-            vertex.color == [0.52, 0.72, 0.88, 0.42] && vertex.position[2] > 2.0
-        }));
+        assert!(
+            first.vertices.iter().any(|vertex| {
+                vertex.color == [0.5, 0.62, 0.72, 0.24] && vertex.position[2] > 2.0
+            })
+        );
         assert!(first.vertices.iter().any(|vertex| {
             vertex.color[0] >= 0.45
                 && vertex.color[1] >= 0.6
@@ -16114,7 +17599,7 @@ mod tests {
         );
 
         assert!(geometry.vertices.iter().any(|vertex| {
-            vertex.color == [0.35, 0.9, 1.0, 1.0]
+            vertex.color == [0.34, 0.54, 0.58, 0.46]
                 && vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
                 && vertex.surface_response == WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON
         }));
@@ -16126,10 +17611,10 @@ mod tests {
                 && vertex.surface_response == WINDOW_SURFACE_RESPONSE_WET_ROAD
         }));
         assert!(geometry.vertices.iter().any(|vertex| {
-            vertex.color[0] == 1.0
-                && vertex.color[1] == 0.38
-                && vertex.color[2] == 0.82
-                && vertex.color[3] > 0.25
+            vertex.color[0] == 0.72
+                && vertex.color[1] == 0.32
+                && vertex.color[2] == 0.52
+                && vertex.color[3] > 0.15
                 && vertex.surface_response == WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON
         }));
         assert!(geometry.vertices.iter().any(|vertex| {
@@ -16284,9 +17769,25 @@ mod tests {
                 .iter()
                 .any(
                     |vertex| vertex.surface_response == WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE
-                        && vertex.color[0] >= 1.0
+                        && vertex.color[0] >= 0.78
                 )
         );
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.surface_response == WINDOW_SURFACE_RESPONSE_METAL
+                && vertex.position[2] > 2.0
+                && [vertex.normal[0], vertex.normal[1], vertex.normal[2]]
+                    .into_iter()
+                    .filter(|component| component.abs() > 0.2)
+                    .count()
+                    >= 2
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color[0] == 0.32
+                && vertex.color[1] == 0.68
+                && vertex.color[2] == 0.48
+                && (0.13..0.15).contains(&vertex.color[3])
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON
+        }));
         assert!(
             geometry
                 .vertices
@@ -16769,6 +18270,18 @@ mod tests {
             vertex.color == humanoid_eye_tearline_color(None)
                 && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_EYE
         }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_skin_soft_shadow_color(color, None)
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_SKIN
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_clothing_fold_shadow_color(color, None)
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_boot_sole_color(color, None)
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH
+        }));
     }
 
     #[test]
@@ -16866,6 +18379,20 @@ mod tests {
             vertex.color == humanoid_eye_tearline_color(None)
                 && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_EYE
         }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_fingernail_color(color, None)
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_SKIN
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_tooth_enamel_color(color, None)
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_SKIN
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_inner_mouth_color(color, None)
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_SKIN
+        }));
+        assert!(humanoid_trim_color()[1] < 0.7);
+        assert!(humanoid_trim_color()[3] < 0.7);
     }
 
     #[test]
@@ -16967,6 +18494,19 @@ mod tests {
             vertex.surface_response == wet_skin_response
                 && vertex.material_detail[2] > 0.34
                 && vertex.material_detail[3] > 0.22
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_skin_soft_shadow_color([0.96, 0.72, 0.28, 1.0], Some(&surface))
+                && vertex.surface_response == skin_response
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color
+                == humanoid_clothing_fold_shadow_color([0.96, 0.72, 0.28, 1.0], Some(&surface))
+                && vertex.surface_response == clothing_response
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_boot_sole_color([0.96, 0.72, 0.28, 1.0], Some(&surface))
+                && vertex.surface_response == clothing_response
         }));
     }
 
