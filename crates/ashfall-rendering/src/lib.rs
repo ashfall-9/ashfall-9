@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+pub mod beauty_contract;
 pub mod windowed;
 
 use ashfall_core::assets::AssetPriority;

@@ -14,20 +14,20 @@ use ashfall_rendering::windowed::{
     WindowCityMaterialPlacementVisual, WindowCityPersistenceCounts, WindowCityPersistentCellVisual,
     WindowCityRouteConsequenceStatus, WindowCityRouteConsequenceVisual,
     WindowCityStreamingCellState, WindowCityStreamingCellVisual, WindowCityTraversalVisualKind,
-    WindowDynamicLight, WindowFrameState, WindowGasVolumeVisual, WindowGeneratedCityChunkVisual,
-    WindowGeneratedCityNavigationEdgeVisual, WindowGeneratedCityNavigationNodeVisual,
-    WindowHudEventPulse, WindowInfrastructureVisualState, WindowInputState,
-    WindowPerspectiveCamera, WindowScene, WindowSceneGeometry, WindowSnapshotSceneOptions,
-    WindowWorldEventMarker, WindowWorldMarkerVisual, WindowedRendererConfig, run_windowed_scene,
-    window_atmosphere_for_alley, window_dynamic_light_from_city_material_placements,
-    window_dynamic_light_from_snapshot, window_hud_event_pulse_from_event,
-    window_world_marker_from_event,
+    WindowDebugOverlayFlags, WindowDynamicLight, WindowFrameState, WindowGasVolumeVisual,
+    WindowGeneratedCityChunkVisual, WindowGeneratedCityNavigationEdgeVisual,
+    WindowGeneratedCityNavigationNodeVisual, WindowHudEventPulse, WindowInfrastructureVisualState,
+    WindowInputState, WindowPerspectiveCamera, WindowRenderMode, WindowScene, WindowSceneGeometry,
+    WindowSnapshotSceneOptions, WindowWorldEventMarker, WindowWorldMarkerVisual,
+    WindowedRendererConfig, run_windowed_scene, window_atmosphere_for_alley,
+    window_dynamic_light_from_city_material_placements, window_dynamic_light_from_snapshot,
+    window_hud_event_pulse_from_event, window_world_marker_from_event,
 };
 #[cfg(test)]
 use ashfall_rendering::windowed::{
     WINDOW_SURFACE_RESPONSE_GLASS, WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH,
     WINDOW_SURFACE_RESPONSE_HUMAN_SKIN, WINDOW_SURFACE_RESPONSE_METAL,
-    WINDOW_SURFACE_RESPONSE_ROUGH_DIRT, WindowSceneVertex,
+    WINDOW_SURFACE_RESPONSE_ROUGH_DIRT, WINDOW_SURFACE_RESPONSE_WET_ROAD, WindowSceneVertex,
 };
 use ashfall_voice::RodioEventAudioSink;
 use ashfall_worldgen::{
@@ -67,14 +67,9 @@ pub fn run_windowed_game() -> Result<(), Box<dyn Error>> {
 
 fn run_windowed_game_on_current_thread() -> Result<(), Box<dyn Error>> {
     let runtime = build_alley_runtime()?;
+    let config = WindowedRendererConfig::beauty_default("Ashfall - Beauty Mode");
     let scene = AlleyWindowScene::new(runtime);
-    run_windowed_scene(
-        scene,
-        WindowedRendererConfig {
-            title: "Ashfall - Vulkan Runtime".to_string(),
-            ..Default::default()
-        },
-    )
+    run_windowed_scene(scene, config)
 }
 
 #[cfg(target_os = "windows")]
@@ -121,6 +116,8 @@ struct AlleyWindowScene {
     last_gpu_pass_count: usize,
     last_event_summary: Option<String>,
     last_error: Option<String>,
+    render_mode: WindowRenderMode,
+    debug_overlays: WindowDebugOverlayFlags,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -260,17 +257,45 @@ impl WindowAudioStatus {
 
 impl AlleyWindowScene {
     fn new(runtime: EngineRuntime) -> Self {
+        let config = WindowedRendererConfig::beauty_default("Ashfall - Beauty Mode");
+        Self::new_with_render_config(runtime, &config)
+    }
+
+    fn new_with_render_config(runtime: EngineRuntime, config: &WindowedRendererConfig) -> Self {
         let (event_audio_sink, audio_status) = match RodioEventAudioSink::open_default() {
             Ok(sink) => (Some(sink), WindowAudioStatus::Ready),
             Err(error) => (None, WindowAudioStatus::Unavailable(error)),
         };
-        Self::new_with_audio(runtime, event_audio_sink, audio_status)
+        Self::new_with_audio_and_policy(
+            runtime,
+            event_audio_sink,
+            audio_status,
+            config.render_mode,
+            config.debug_overlays,
+        )
     }
 
+    #[cfg(test)]
     fn new_with_audio(
+        runtime: EngineRuntime,
+        event_audio_sink: Option<RodioEventAudioSink>,
+        audio_status: WindowAudioStatus,
+    ) -> Self {
+        Self::new_with_audio_and_policy(
+            runtime,
+            event_audio_sink,
+            audio_status,
+            WindowRenderMode::Debug,
+            WindowDebugOverlayFlags::all(),
+        )
+    }
+
+    fn new_with_audio_and_policy(
         mut runtime: EngineRuntime,
         event_audio_sink: Option<RodioEventAudioSink>,
         audio_status: WindowAudioStatus,
+        render_mode: WindowRenderMode,
+        debug_overlays: WindowDebugOverlayFlags,
     ) -> Self {
         let initial_frame = runtime.render_frame(0.0);
         let last_tick = initial_frame.sim_time.tick;
@@ -311,6 +336,16 @@ impl AlleyWindowScene {
             last_gpu_pass_count: 0,
             last_event_summary: None,
             last_error: None,
+            render_mode,
+            debug_overlays,
+        }
+    }
+
+    fn debug_overlay_enabled(&self, overlay: impl FnOnce(WindowDebugOverlayFlags) -> bool) -> bool {
+        match self.render_mode {
+            WindowRenderMode::Beauty => false,
+            WindowRenderMode::Debug => true,
+            WindowRenderMode::Mixed => overlay(self.debug_overlays),
         }
     }
 
@@ -897,12 +932,20 @@ impl AlleyWindowScene {
     }
 
     fn city_dynamic_light(&self) -> WindowDynamicLight {
+        if !self.debug_overlay_enabled(|overlays| overlays.material_placements) {
+            return self.beauty_production_light();
+        }
+
         let placements = self.city_material_placement_visuals();
         window_dynamic_light_from_city_material_placements(
             &placements,
             self.camera.position,
             self.frame_index,
         )
+    }
+
+    fn beauty_production_light(&self) -> WindowDynamicLight {
+        WindowDynamicLight::new([-1.8, -4.2, 4.4], 18.0, [1.0, 0.92, 0.78], 0.82)
     }
 
     fn city_consequence_visuals(
@@ -1252,25 +1295,7 @@ impl AlleyWindowScene {
         let mut geometry = WindowSceneGeometry::default();
         geometry.add_window_natural_sky(self.frame_index);
         geometry.add_window_alley_environment();
-        let (generated_city_chunks, generated_city_nodes, generated_city_edges) =
-            self.generated_city_visuals();
-        geometry.add_window_generated_city(
-            &generated_city_chunks,
-            &generated_city_nodes,
-            &generated_city_edges,
-            self.frame_index,
-        );
-        let city_material_placements = self.city_material_placement_visuals();
-        geometry.add_window_city_material_placements(&city_material_placements, self.frame_index);
-        let city_streaming_cells = self.city_streaming_visuals();
-        geometry.add_window_city_streaming_cells(&city_streaming_cells, self.frame_index);
-        let (persistent_cells, danger_fields, route_consequences) = self.city_consequence_visuals();
-        geometry.add_window_city_consequences(
-            &persistent_cells,
-            &danger_fields,
-            &route_consequences,
-            self.frame_index,
-        );
+        self.add_debug_city_geometry(&mut geometry);
         geometry.add_window_alley_infrastructure(
             self.frame_index,
             self.infrastructure_state.visible_state(),
@@ -1282,12 +1307,64 @@ impl AlleyWindowScene {
             );
         }
         geometry.add_window_alley_weather(self.frame_index, self.camera);
-        self.add_gas_volumes(&mut geometry);
-        self.add_interaction_target_preview(&mut geometry);
-        self.add_event_markers(&mut geometry);
+        if self.debug_overlay_enabled(|overlays| overlays.gas_volumes) {
+            self.add_gas_volumes(&mut geometry);
+        }
+        if self.debug_overlay_enabled(|overlays| overlays.event_markers) {
+            self.add_interaction_target_preview(&mut geometry);
+            self.add_event_markers(&mut geometry);
+        }
         self.add_hud(&mut geometry);
 
         geometry
+    }
+
+    fn add_debug_city_geometry(&self, geometry: &mut WindowSceneGeometry) {
+        let include_city_chunks = self.debug_overlay_enabled(|overlays| overlays.city_chunks);
+        let include_navigation_graph =
+            self.debug_overlay_enabled(|overlays| overlays.navigation_graph);
+        if include_city_chunks || include_navigation_graph {
+            let (generated_city_chunks, generated_city_nodes, generated_city_edges) =
+                self.generated_city_visuals();
+            let chunks = if include_city_chunks {
+                generated_city_chunks.as_slice()
+            } else {
+                &[]
+            };
+            let nodes = if include_navigation_graph {
+                generated_city_nodes.as_slice()
+            } else {
+                &[]
+            };
+            let edges = if include_navigation_graph {
+                generated_city_edges.as_slice()
+            } else {
+                &[]
+            };
+            geometry.add_window_generated_city(chunks, nodes, edges, self.frame_index);
+        }
+
+        if self.debug_overlay_enabled(|overlays| overlays.material_placements) {
+            let city_material_placements = self.city_material_placement_visuals();
+            geometry
+                .add_window_city_material_placements(&city_material_placements, self.frame_index);
+        }
+
+        if self.debug_overlay_enabled(|overlays| overlays.streaming_cells) {
+            let city_streaming_cells = self.city_streaming_visuals();
+            geometry.add_window_city_streaming_cells(&city_streaming_cells, self.frame_index);
+        }
+
+        if self.debug_overlay_enabled(|overlays| overlays.route_consequences) {
+            let (persistent_cells, danger_fields, route_consequences) =
+                self.city_consequence_visuals();
+            geometry.add_window_city_consequences(
+                &persistent_cells,
+                &danger_fields,
+                &route_consequences,
+                self.frame_index,
+            );
+        }
     }
 
     fn interaction_preview(&self) -> Option<PrimaryInteraction> {
@@ -2096,6 +2173,64 @@ mod tests {
             physical_evidence: Vec::new(),
             narrative_tags: Vec::new(),
         }
+    }
+
+    fn scene_with_render_config(config: WindowedRendererConfig) -> AlleyWindowScene {
+        let runtime = build_alley_runtime().expect("alley runtime should build");
+        AlleyWindowScene::new_with_audio_and_policy(
+            runtime,
+            None,
+            WindowAudioStatus::Unavailable("test audio disabled".to_string()),
+            config.render_mode,
+            config.debug_overlays,
+        )
+    }
+
+    #[test]
+    fn beauty_scene_omits_debug_overlays_but_keeps_realism_baseline() {
+        let beauty = scene_with_render_config(WindowedRendererConfig::beauty_default(
+            "Ashfall - Beauty Mode",
+        ));
+        let debug = scene_with_render_config(WindowedRendererConfig::debug_default(
+            "Ashfall - Debug Mode",
+        ));
+
+        let beauty_geometry = beauty.scene_geometry();
+        let debug_geometry = debug.scene_geometry();
+
+        assert!(!beauty.debug_overlay_enabled(|overlays| overlays.city_chunks));
+        assert!(!beauty.debug_overlay_enabled(|overlays| overlays.streaming_cells));
+        assert!(!beauty.debug_overlay_enabled(|overlays| overlays.navigation_graph));
+        assert!(!beauty.debug_overlay_enabled(|overlays| overlays.material_placements));
+        assert!(debug.debug_overlay_enabled(|overlays| overlays.city_chunks));
+        assert!(
+            debug_geometry.vertices.len() > beauty_geometry.vertices.len() + 1_000,
+            "Debug mode should retain generated city/streaming overlays while Beauty omits them"
+        );
+        assert!(beauty_geometry.vertices.iter().any(|vertex| {
+            vertex.coordinate_space == WindowSceneVertex::SCREEN_SPACE
+                && vertex.position[2] > 0.95
+                && vertex.color[2] > vertex.color[0] * 0.8
+        }));
+        assert!(beauty_geometry.vertices.iter().any(|vertex| {
+            vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_WET_ROAD
+        }));
+        assert!(beauty_geometry.vertices.iter().any(|vertex| {
+            vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_ROUGH_DIRT
+        }));
+        assert!(beauty_geometry.vertices.iter().any(|vertex| {
+            vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
+                && vertex.surface_response[2] >= WINDOW_SURFACE_RESPONSE_HUMAN_SKIN[2]
+                && vertex.surface_response[0] <= WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH[0]
+                && vertex.position[2] > 0.8
+        }));
+        assert!(beauty_geometry.vertices.iter().any(|vertex| {
+            vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_METAL
+                && vertex.position[2] > 0.18
+        }));
     }
 
     #[test]

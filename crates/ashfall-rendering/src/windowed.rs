@@ -55,12 +55,151 @@ use winit::{
     window::{CursorGrabMode, Window, WindowId},
 };
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WindowRenderMode {
+    #[default]
+    Beauty,
+    Debug,
+    Mixed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowDebugOverlayFlags {
+    pub city_chunks: bool,
+    pub streaming_cells: bool,
+    pub navigation_graph: bool,
+    pub material_placements: bool,
+    pub event_markers: bool,
+    pub gas_volumes: bool,
+    pub route_consequences: bool,
+    pub performance_hud: bool,
+}
+
+impl WindowDebugOverlayFlags {
+    pub const fn none() -> Self {
+        Self {
+            city_chunks: false,
+            streaming_cells: false,
+            navigation_graph: false,
+            material_placements: false,
+            event_markers: false,
+            gas_volumes: false,
+            route_consequences: false,
+            performance_hud: false,
+        }
+    }
+
+    pub const fn all() -> Self {
+        Self {
+            city_chunks: true,
+            streaming_cells: true,
+            navigation_graph: true,
+            material_placements: true,
+            event_markers: true,
+            gas_volumes: true,
+            route_consequences: true,
+            performance_hud: true,
+        }
+    }
+
+    pub fn any_enabled(self) -> bool {
+        self.city_chunks
+            || self.streaming_cells
+            || self.navigation_graph
+            || self.material_placements
+            || self.event_markers
+            || self.gas_volumes
+            || self.route_consequences
+            || self.performance_hud
+    }
+}
+
+impl Default for WindowDebugOverlayFlags {
+    fn default() -> Self {
+        Self::none()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowBeautyFrameBudget {
+    pub target_frame_ms: f32,
+    pub target_cpu_ms: f32,
+    pub target_gpu_ms: f32,
+    pub max_geometry_upload_mb_per_frame: f32,
+    pub max_material_pages_generated_per_frame: u32,
+    pub max_shadow_pages_updated_per_frame: u32,
+    pub minimum_foreground_lod_bias: f32,
+}
+
+impl Default for WindowBeautyFrameBudget {
+    fn default() -> Self {
+        Self {
+            target_frame_ms: 16.67,
+            target_cpu_ms: 6.0,
+            target_gpu_ms: 9.5,
+            max_geometry_upload_mb_per_frame: 8.0,
+            max_material_pages_generated_per_frame: 12,
+            max_shadow_pages_updated_per_frame: 16,
+            minimum_foreground_lod_bias: 1.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowNaturalEnvironmentConfig {
+    pub enable_sky: bool,
+    pub enable_sun: bool,
+    pub enable_moon: bool,
+    pub enable_clouds: bool,
+    pub enable_fog: bool,
+    pub enable_rain: bool,
+    pub neon_is_accent_only: bool,
+    pub sun_direction_world: [f32; 3],
+    pub moon_direction_world: [f32; 3],
+    pub cloud_coverage: f32,
+    pub fog_density: f32,
+    pub rain_intensity: f32,
+    pub exposure_value: f32,
+    pub white_balance_kelvin: f32,
+}
+
+impl WindowNaturalEnvironmentConfig {
+    pub const fn rainy_alley_default() -> Self {
+        Self {
+            enable_sky: true,
+            enable_sun: true,
+            enable_moon: true,
+            enable_clouds: true,
+            enable_fog: true,
+            enable_rain: true,
+            neon_is_accent_only: true,
+            sun_direction_world: [0.24, -0.78, 0.58],
+            moon_direction_world: [-0.36, 0.54, 0.76],
+            cloud_coverage: 0.62,
+            fog_density: 0.012,
+            rain_intensity: 0.38,
+            exposure_value: 1.18,
+            white_balance_kelvin: 6200.0,
+        }
+    }
+}
+
+impl Default for WindowNaturalEnvironmentConfig {
+    fn default() -> Self {
+        Self::rainy_alley_default()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowedRendererConfig {
     pub title: String,
     pub width: f32,
     pub height: f32,
     pub print_device_name: bool,
+    pub render_mode: WindowRenderMode,
+    pub debug_overlays: WindowDebugOverlayFlags,
+    pub beauty_frame_budget: WindowBeautyFrameBudget,
+    pub natural_environment: WindowNaturalEnvironmentConfig,
 }
 
 impl Default for WindowedRendererConfig {
@@ -70,7 +209,51 @@ impl Default for WindowedRendererConfig {
             width: 1280.0,
             height: 720.0,
             print_device_name: true,
+            render_mode: WindowRenderMode::Beauty,
+            debug_overlays: WindowDebugOverlayFlags::none(),
+            beauty_frame_budget: WindowBeautyFrameBudget::default(),
+            natural_environment: WindowNaturalEnvironmentConfig::default(),
         }
+    }
+}
+
+impl WindowedRendererConfig {
+    pub fn beauty_default(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            ..Self::default()
+        }
+    }
+
+    pub fn debug_default(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            render_mode: WindowRenderMode::Debug,
+            debug_overlays: WindowDebugOverlayFlags::all(),
+            ..Self::default()
+        }
+    }
+
+    pub fn mixed_default(
+        title: impl Into<String>,
+        debug_overlays: WindowDebugOverlayFlags,
+    ) -> Self {
+        Self {
+            title: title.into(),
+            render_mode: WindowRenderMode::Mixed,
+            debug_overlays,
+            ..Self::default()
+        }
+    }
+
+    pub fn is_beauty_mode(&self) -> bool {
+        matches!(self.render_mode, WindowRenderMode::Beauty)
+    }
+
+    pub fn allows_debug_geometry(&self) -> bool {
+        matches!(self.render_mode, WindowRenderMode::Debug)
+            || (matches!(self.render_mode, WindowRenderMode::Mixed)
+                && self.debug_overlays.any_enabled())
     }
 }
 

@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+pub mod beauty_package;
+
 use ashfall_core::assets::{
     ASSET_PACKAGE_MANIFEST_SCHEMA_VERSION, AssetKind, AssetLoadState, AssetPackageChunkManifest,
     AssetPackageManifest, AssetRecord, AssetRegistry,

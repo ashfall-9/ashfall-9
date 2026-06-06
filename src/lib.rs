@@ -1,3 +1,4 @@
+pub mod beauty_scene_builder;
 pub mod scenarios;
 pub mod windowed;
 
