@@ -10,7 +10,7 @@ use ashfall_rendering::beauty_v16::{
     EnvironmentStateV16, FacadeModuleV16, HumanProxyV16, IrregularityRecipeV16,
     MaterialPageRequestV16, RoadSplineV16, ScatterFieldV16, VehicleProxyV16,
 };
-use ashfall_worldgen::WorldTemplate;
+use ashfall_worldgen::{WorldChunk, WorldTemplate};
 
 const MAT_WET_ASPHALT: BeautyMaterialIdV16 = BeautyMaterialIdV16(0xA5F_A17);
 const MAT_DIRTY_CONCRETE: BeautyMaterialIdV16 = BeautyMaterialIdV16(0xC0A1_C0A1);
@@ -44,7 +44,13 @@ pub fn build_beauty_scene_v16(
         .collect::<Vec<_>>();
     nearest_chunks.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
-    for (_, chunk) in nearest_chunks.into_iter().take(5) {
+    let visible_chunks = nearest_chunks
+        .into_iter()
+        .take(5)
+        .map(|(_, chunk)| chunk)
+        .collect::<Vec<_>>();
+
+    for chunk in &visible_chunks {
         scene.cells.push(build_cell_package_from_chunk(
             chunk.chunk_id,
             chunk.bounds.min.x,
@@ -55,14 +61,38 @@ pub fn build_beauty_scene_v16(
         ));
     }
 
-    scene.humans.push(default_human_proxy(
-        city_template.seed,
-        camera_xy,
-        frame_index,
-    ));
-    scene
-        .vehicles
-        .push(default_vehicle_proxy(city_template.seed, camera_xy));
+    if visible_chunks.is_empty() {
+        scene.collect_cell_material_pages();
+        return scene;
+    }
+
+    let human_count = visible_chunks
+        .iter()
+        .map(|chunk| chunk.population.expected_active_npcs.max(1))
+        .sum::<usize>()
+        .clamp(2, 6);
+    for index in 0..human_count {
+        let chunk = visible_chunks[index % visible_chunks.len().max(1)];
+        scene.humans.push(human_proxy_for_chunk(
+            chunk,
+            city_template.seed,
+            frame_index,
+            index,
+        ));
+    }
+
+    let vehicle_count = visible_chunks
+        .iter()
+        .map(|chunk| chunk.population.expected_vehicle_or_transit_count.max(1))
+        .sum::<usize>()
+        .clamp(1, 4);
+    for index in 0..vehicle_count {
+        let chunk = visible_chunks[index % visible_chunks.len().max(1)];
+        scene
+            .vehicles
+            .push(vehicle_proxy_for_chunk(chunk, city_template.seed, index));
+    }
+
     scene.collect_cell_material_pages();
     scene
 }
@@ -282,22 +312,77 @@ fn build_cell_package_from_chunk(
     }
 }
 
-fn default_human_proxy(world_seed: u64, camera_xy: [f32; 2], frame_index: u64) -> HumanProxyV16 {
+fn human_proxy_for_chunk(
+    chunk: &WorldChunk,
+    world_seed: u64,
+    frame_index: u64,
+    index: usize,
+) -> HumanProxyV16 {
+    let seed = world_seed ^ chunk.chunk_id ^ (index as u64).wrapping_mul(0x484D_001D);
+    let center_x = (chunk.bounds.min.x + chunk.bounds.max.x) * 0.5;
+    let min_y = chunk.bounds.min.y;
+    let max_y = chunk.bounds.max.y;
+    let width = (chunk.bounds.max.x - chunk.bounds.min.x).abs().max(8.0);
+    let depth = (max_y - min_y).abs().max(8.0);
+    let sidewalk_side = if index.is_multiple_of(2) { -1.0 } else { 1.0 };
+    let sidewalk_offset = (width * 0.20).clamp(1.4, 4.8);
+    let entity_id = chunk
+        .active_npc_seeds
+        .get(index % chunk.active_npc_seeds.len().max(1))
+        .copied()
+        .unwrap_or_else(|| {
+            chunk
+                .chunk_id
+                .wrapping_mul(10_000)
+                .wrapping_add(index as u64 + 1)
+        });
+
     let mut human = HumanProxyV16::default_adult(
-        0x484D_0001,
-        [camera_xy[0] + 2.2, camera_xy[1] - 3.4, 0.02],
-        world_seed ^ 0x484D,
+        entity_id,
+        [
+            center_x + sidewalk_side * sidewalk_offset + seeded_signed(seed, 1) * 0.45,
+            min_y + depth * (0.18 + seeded01(seed, 2) * 0.64),
+            0.02,
+        ],
+        seed,
     );
+    human.height_meters = 1.58 + seeded01(seed, 3) * 0.34;
+    human.shoulder_width_meters = 0.38 + seeded01(seed, 4) * 0.12;
+    human.hip_width_meters = 0.30 + seeded01(seed, 5) * 0.09;
+    human.head_radius_meters = 0.092 + seeded01(seed, 6) * 0.026;
     human.animation_phase_0_to_1 = ((frame_index % 180) as f32 / 180.0).clamp(0.0, 1.0);
+    human.breathing_weight_0_to_1 = 0.25 + seeded01(seed, 7) * 0.35;
     human
 }
 
-fn default_vehicle_proxy(world_seed: u64, camera_xy: [f32; 2]) -> VehicleProxyV16 {
-    VehicleProxyV16::compact_car_default(
-        0xCA9_0001,
-        [camera_xy[0] - 3.7, camera_xy[1] + 4.8, 0.02],
-        world_seed ^ 0xCA9,
-    )
+fn vehicle_proxy_for_chunk(chunk: &WorldChunk, world_seed: u64, index: usize) -> VehicleProxyV16 {
+    let seed = world_seed ^ chunk.chunk_id ^ (index as u64).wrapping_mul(0xCA9_1001);
+    let center_x = (chunk.bounds.min.x + chunk.bounds.max.x) * 0.5;
+    let min_y = chunk.bounds.min.y;
+    let max_y = chunk.bounds.max.y;
+    let width = (chunk.bounds.max.x - chunk.bounds.min.x).abs().max(8.0);
+    let depth = (max_y - min_y).abs().max(8.0);
+    let side = if index.is_multiple_of(2) { -1.0 } else { 1.0 };
+    let lane_offset = (width * 0.07).clamp(0.6, 1.5);
+    let mut vehicle = VehicleProxyV16::compact_car_default(
+        chunk
+            .chunk_id
+            .wrapping_mul(10_000)
+            .wrapping_add(5_000 + index as u64),
+        [
+            center_x + side * lane_offset + seeded_signed(seed, 1) * 0.45,
+            min_y + depth * (0.24 + seeded01(seed, 2) * 0.52),
+            0.02,
+        ],
+        seed,
+    );
+    vehicle.length_meters = 3.9 + seeded01(seed, 3) * 1.1;
+    vehicle.width_meters = 1.68 + seeded01(seed, 4) * 0.32;
+    vehicle.height_meters = 1.25 + seeded01(seed, 5) * 0.36;
+    vehicle.wheel_radius_meters = 0.27 + seeded01(seed, 6) * 0.08;
+    vehicle.wetness_0_to_1 = 0.42 + seeded01(seed, 7) * 0.28;
+    vehicle.dirt_0_to_1 = 0.24 + seeded01(seed, 8) * 0.42;
+    vehicle
 }
 
 fn retained_cache_key(world_seed: u64, cell_id: u64) -> u128 {

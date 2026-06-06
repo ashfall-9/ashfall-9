@@ -4,10 +4,19 @@ use ashfall_materials::{
     MATERIAL_GLASS, MATERIAL_HUMAN_SKIN, MATERIAL_NEON_TUBE, MATERIAL_WATER, MATERIAL_WET_ASPHALT,
 };
 use ashfall_physics::{PlanarMotionSettings, constrain_planar_motion};
+use ashfall_rendering::beauty_v16::BeautySceneV16;
+#[cfg(test)]
 use ashfall_rendering::beauty_v16::{
-    AnchoredPuddleV16, BeautyBoundsV16, BeautySceneV16, CurbSegmentV16, CurveObjectV16,
-    FacadeModuleV16, HumanProxyV16, RoadSplineV16, ScatterFieldV16, VehicleProxyV16,
+    AnchoredPuddleV16, BeautyBoundsV16, CurbSegmentV16, CurveObjectV16, FacadeModuleV16,
+    HumanProxyV16, RoadSplineV16, ScatterFieldV16, VehicleProxyV16,
 };
+use ashfall_rendering::beauty_v17::{
+    BeautyBoundsV17, BeautyDrawListV17, BeautySceneV17, CurbSegmentV17, CurveObjectV17,
+    FacadeModuleV17, GroundedPuddleV17, HumanProxyV17, RoadPatchV17, ScatterFieldV17,
+    VehicleProxyV17,
+};
+#[cfg(test)]
+use ashfall_rendering::windowed::WindowHumanoidProxyInstance;
 #[cfg(test)]
 use ashfall_rendering::windowed::WindowSceneVertex;
 use ashfall_rendering::windowed::{
@@ -25,13 +34,12 @@ use ashfall_rendering::windowed::{
     WindowCityStreamingCellState, WindowCityStreamingCellVisual, WindowCityTraversalVisualKind,
     WindowDebugOverlayFlags, WindowDynamicLight, WindowFrameState, WindowGasVolumeVisual,
     WindowGeneratedCityChunkVisual, WindowGeneratedCityNavigationEdgeVisual,
-    WindowGeneratedCityNavigationNodeVisual, WindowHudEventPulse, WindowHumanoidProxyInstance,
-    WindowInfrastructureVisualState, WindowInputState, WindowPerspectiveCamera, WindowRenderMode,
-    WindowScene, WindowSceneGeometry, WindowSnapshotSceneOptions, WindowWorldEventMarker,
-    WindowWorldMarkerVisual, WindowedRendererConfig, run_windowed_scene,
-    window_atmosphere_for_alley, window_dynamic_light_from_city_material_placements,
-    window_dynamic_light_from_snapshot, window_hud_event_pulse_from_event,
-    window_world_marker_from_event,
+    WindowGeneratedCityNavigationNodeVisual, WindowHudEventPulse, WindowInfrastructureVisualState,
+    WindowInputState, WindowPerspectiveCamera, WindowRenderMode, WindowScene, WindowSceneGeometry,
+    WindowSnapshotSceneOptions, WindowWorldEventMarker, WindowWorldMarkerVisual,
+    WindowedRendererConfig, run_windowed_scene, window_atmosphere_for_alley,
+    window_dynamic_light_from_city_material_placements, window_dynamic_light_from_snapshot,
+    window_hud_event_pulse_from_event, window_world_marker_from_event,
 };
 use ashfall_voice::RodioEventAudioSink;
 use ashfall_worldgen::{
@@ -44,6 +52,7 @@ use ashfall_worldgen::{
 
 use crate::beauty_scene_v15_bridge::build_beauty_scene_v15;
 use crate::beauty_scene_v16_bridge::build_beauty_scene_v16;
+use crate::beauty_scene_v17_bridge::build_beauty_scene_v17;
 #[cfg(test)]
 use crate::core::QualityTier;
 use crate::core::{MaterialDescriptor, MaterialId, MaterialState, Vec3};
@@ -703,6 +712,14 @@ impl AlleyWindowScene {
         )
     }
 
+    fn beauty_scene_v17(&self) -> BeautySceneV17 {
+        build_beauty_scene_v17(
+            &self.city_template,
+            [self.camera.position[0], self.camera.position[1]],
+            self.frame_index,
+        )
+    }
+
     fn city_streaming_visuals(&self) -> Vec<WindowCityStreamingCellVisual> {
         let request = self.city_streaming_request();
         let plan = plan_city_cell_streaming(&self.city_template, &request);
@@ -1317,7 +1334,7 @@ impl AlleyWindowScene {
         let mut geometry = WindowSceneGeometry::default();
         geometry.add_window_natural_sky(self.frame_index);
         geometry.add_window_alley_environment();
-        self.add_beauty_v16_geometry(&mut geometry);
+        self.add_beauty_v17_geometry(&mut geometry);
         self.add_debug_city_geometry(&mut geometry);
         geometry.add_window_alley_infrastructure(
             self.frame_index,
@@ -1342,6 +1359,7 @@ impl AlleyWindowScene {
         geometry
     }
 
+    #[cfg(test)]
     fn add_beauty_v16_geometry(&self, geometry: &mut WindowSceneGeometry) {
         let scene = self.beauty_scene_v16();
 
@@ -1371,6 +1389,43 @@ impl AlleyWindowScene {
         }
         for vehicle in &scene.vehicles {
             add_beauty_v16_vehicle(geometry, vehicle);
+        }
+    }
+
+    fn add_beauty_v17_geometry(&self, geometry: &mut WindowSceneGeometry) {
+        let scene = self.beauty_scene_v17();
+        let draw_list = BeautyDrawListV17::from_scene(&scene);
+
+        if draw_list.has_sky_commands() {
+            add_beauty_v17_sky_detail(geometry, scene.frame_index);
+        }
+
+        for cell in &scene.cells {
+            for road in &cell.roads {
+                add_beauty_v17_road(geometry, road);
+            }
+            for curb in &cell.curbs {
+                add_beauty_v17_curb(geometry, curb);
+            }
+            for facade in &cell.facades {
+                add_beauty_v17_facade(geometry, facade);
+            }
+            for curve in &cell.pipes_and_cables {
+                add_beauty_v17_curve_object(geometry, curve);
+            }
+            for puddle in &cell.puddles {
+                add_beauty_v17_puddle(geometry, puddle);
+            }
+            for scatter in &cell.scatter_fields {
+                add_beauty_v17_scatter(geometry, scatter);
+            }
+        }
+
+        for human in &scene.humans {
+            add_beauty_v17_human(geometry, human);
+        }
+        for vehicle in &scene.vehicles {
+            add_beauty_v17_vehicle(geometry, vehicle);
         }
     }
 
@@ -1479,6 +1534,75 @@ impl AlleyWindowScene {
     }
 }
 
+#[cfg(test)]
+fn add_beauty_v16_sky_detail(geometry: &mut WindowSceneGeometry, frame_index: u64) {
+    let pulse = (frame_index as f32 * 0.004).sin().mul_add(0.5, 0.5);
+    let far_depth = 0.985;
+
+    geometry.screen_rect(
+        [-1.0, -1.0],
+        [1.0, 1.0],
+        far_depth,
+        [0.44, 0.55, 0.66, 0.26],
+    );
+    geometry.screen_rect(
+        [-1.0, -0.20],
+        [1.0, 0.34],
+        far_depth - 0.004,
+        [0.70, 0.67, 0.58, 0.16],
+    );
+
+    let sun = [0.52, -0.56];
+    for (radius, alpha) in [(0.24, 0.08), (0.13, 0.16), (0.058, 0.72)] {
+        geometry.screen_ellipse(
+            sun,
+            [radius, radius],
+            36,
+            far_depth - 0.012,
+            [1.0, 0.86, 0.58, alpha + pulse * 0.04],
+        );
+    }
+
+    let moon = [-0.58, 0.55];
+    geometry.screen_ellipse(
+        moon,
+        [0.066, 0.066],
+        28,
+        far_depth - 0.011,
+        [0.76, 0.82, 0.86, 0.38],
+    );
+    geometry.screen_ellipse(
+        [moon[0] + 0.032, moon[1] - 0.006],
+        [0.056, 0.060],
+        28,
+        far_depth - 0.012,
+        [0.33, 0.42, 0.52, 0.45],
+    );
+
+    for layer in 0..3 {
+        let y = -0.12 + layer as f32 * 0.25;
+        let drift = (frame_index as f32 * (0.0009 + layer as f32 * 0.0004)).fract();
+        for cluster in 0..7 {
+            let seed = 0xC10D_0000 + layer * 101 + cluster;
+            let x = -1.05 + cluster as f32 * 0.36 + drift * 0.18;
+            let rough = v16_unit(seed, frame_index / 64 + 1);
+            geometry.screen_ellipse(
+                [x, y + (rough - 0.5) * 0.055],
+                [0.18 + rough * 0.09, 0.034 + layer as f32 * 0.012],
+                20,
+                far_depth - 0.016 - layer as f32 * 0.002,
+                [
+                    0.74 - layer as f32 * 0.08,
+                    0.78 - layer as f32 * 0.07,
+                    0.78 - layer as f32 * 0.05,
+                    0.11 + layer as f32 * 0.035,
+                ],
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 fn add_beauty_v16_road(geometry: &mut WindowSceneGeometry, road: &RoadSplineV16) {
     for (segment_index, segment) in road.centerline_world.windows(2).enumerate() {
         let start = segment[0];
@@ -1486,6 +1610,7 @@ fn add_beauty_v16_road(geometry: &mut WindowSceneGeometry, road: &RoadSplineV16)
         let Some(right) = v16_segment_right(start, end) else {
             continue;
         };
+        let forward = v16_segment_forward(start, end);
         let half_width = road.width_meters * 0.5;
         let crown = road.crown_height_meters.max(0.006);
         let left_start = [
@@ -1534,9 +1659,32 @@ fn add_beauty_v16_road(geometry: &mut WindowSceneGeometry, road: &RoadSplineV16)
             [0.024, 0.021, 0.017, 0.32],
             WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
         );
+
+        for crack in 0..5 {
+            let seed = road.irregularity.seed ^ segment_index as u64 ^ (crack as u64 * 0xC4AC);
+            let t = 0.12 + crack as f32 * 0.18 + v16_signed(seed, 1) * 0.035;
+            let lateral = v16_signed(seed, 2) * half_width * 0.62;
+            let center = [
+                start[0] + (end[0] - start[0]) * t + right[0] * lateral,
+                start[1] + (end[1] - start[1]) * t + right[1] * lateral,
+                start[2] + 0.019 + crack as f32 * 0.0004,
+            ];
+            geometry.world_oriented_rect_with_surface_response(
+                center,
+                [forward[0], forward[1], 0.0],
+                [right[0], right[1], 0.0],
+                [
+                    0.18 + v16_unit(seed, 3) * 0.22,
+                    0.009 + v16_unit(seed, 4) * 0.014,
+                ],
+                [0.014, 0.012, 0.010, 0.34],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
     }
 }
 
+#[cfg(test)]
 fn add_beauty_v16_curb(geometry: &mut WindowSceneGeometry, curb: &CurbSegmentV16) {
     geometry.world_cylinder_between_with_surface_response(
         curb.start_world,
@@ -1561,17 +1709,9 @@ fn add_beauty_v16_curb(geometry: &mut WindowSceneGeometry, curb: &CurbSegmentV16
     );
 }
 
+#[cfg(test)]
 fn add_beauty_v16_facade(geometry: &mut WindowSceneGeometry, facade: &FacadeModuleV16) {
     let seed = facade.object_id.0;
-    geometry.world_micro_detailed_box_with_surface_response(
-        facade.bounds.min,
-        facade.bounds.max,
-        [0.30, 0.285, 0.255, 1.0],
-        WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
-        seed,
-        facade.dirt_0_to_1.clamp(0.18, 0.78),
-    );
-
     let bounds = &facade.bounds;
     let face_x = if (bounds.max[0] + bounds.min[0]).abs() > bounds.max[0].abs() {
         bounds.min[0] - 0.012
@@ -1580,6 +1720,29 @@ fn add_beauty_v16_facade(geometry: &mut WindowSceneGeometry, facade: &FacadeModu
     };
     let y_span = (bounds.max[1] - bounds.min[1]).abs().max(1.0);
     let z_span = (bounds.max[2] - bounds.min[2]).abs().max(1.0);
+    geometry.world_quad_with_surface_response(
+        [face_x, bounds.min[1], bounds.min[2]],
+        [face_x, bounds.max[1], bounds.min[2] + 0.06],
+        [face_x, bounds.max[1], bounds.max[2]],
+        [face_x, bounds.min[1], bounds.max[2] - 0.08],
+        [0.30, 0.285, 0.255, 1.0],
+        WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+    );
+
+    let panel_count = (y_span / 1.4).ceil().clamp(4.0, 12.0) as usize;
+    for panel in 0..panel_count {
+        let y = bounds.min[1] + y_span * ((panel as f32 + 0.5) / panel_count as f32);
+        let z = bounds.min[2] + z_span * (0.20 + v16_unit(seed, panel as u64) * 0.68);
+        geometry.world_oriented_rect_with_surface_response(
+            [face_x + 0.004, y, z],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.24 + v16_unit(seed, 101 + panel as u64) * 0.18, 0.018],
+            [0.075, 0.068, 0.055, 0.22 + facade.dirt_0_to_1 * 0.18],
+            WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+        );
+    }
+
     let window_count = facade.window_count.clamp(1, 10) as usize;
     for index in 0..window_count {
         let y_t = (index as f32 + 0.5) / window_count as f32;
@@ -1595,6 +1758,14 @@ fn add_beauty_v16_facade(geometry: &mut WindowSceneGeometry, facade: &FacadeModu
             [0.36, 0.50, 0.54, 0.34 + flicker],
             WINDOW_SURFACE_RESPONSE_GLASS,
         );
+        geometry.world_ellipse_ring_with_surface_response(
+            [face_x + 0.002, y, z.min(bounds.max[2] - 0.45)],
+            [0.17, 0.25],
+            [0.22, 0.30],
+            12,
+            [0.048, 0.048, 0.044, 0.42],
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
     }
 
     for index in 0..facade.vent_count.clamp(1, 5) {
@@ -1609,8 +1780,35 @@ fn add_beauty_v16_facade(geometry: &mut WindowSceneGeometry, facade: &FacadeModu
             WINDOW_SURFACE_RESPONSE_METAL,
         );
     }
+
+    for pipe in 0..2 {
+        let y = bounds.min[1]
+            + y_span * (0.22 + pipe as f32 * 0.54 + v16_signed(seed, 201 + pipe) * 0.04);
+        geometry.world_cylinder_between_with_surface_response(
+            [face_x + 0.018, y, bounds.min[2] + 0.10],
+            [
+                face_x + 0.018,
+                y + v16_signed(seed, 211 + pipe) * 0.12,
+                bounds.max[2] - 0.18,
+            ],
+            0.026 + v16_unit(seed, 221 + pipe) * 0.014,
+            8,
+            [0.055, 0.056, 0.052, 0.90],
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
+    }
+
+    geometry.world_cylinder_between_with_surface_response(
+        [face_x, bounds.min[1], bounds.max[2] + 0.02],
+        [face_x, bounds.max[1], bounds.max[2] + 0.04],
+        0.045,
+        10,
+        [0.20, 0.19, 0.17, 1.0],
+        WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+    );
 }
 
+#[cfg(test)]
 fn add_beauty_v16_curve_object(geometry: &mut WindowSceneGeometry, curve: &CurveObjectV16) {
     let segments = if curve.radius_meters < 0.03 { 7 } else { 10 };
     let color = if curve.radius_meters < 0.03 {
@@ -1630,6 +1828,7 @@ fn add_beauty_v16_curve_object(geometry: &mut WindowSceneGeometry, curve: &Curve
     }
 }
 
+#[cfg(test)]
 fn add_beauty_v16_puddle(geometry: &mut WindowSceneGeometry, puddle: &AnchoredPuddleV16) {
     if !puddle.is_ground_anchored() {
         return;
@@ -1660,6 +1859,7 @@ fn add_beauty_v16_puddle(geometry: &mut WindowSceneGeometry, puddle: &AnchoredPu
     );
 }
 
+#[cfg(test)]
 fn add_beauty_v16_scatter(geometry: &mut WindowSceneGeometry, scatter: &ScatterFieldV16) {
     let count = ((scatter.item_count_budget as f32 * scatter.density_0_to_1)
         .ceil()
@@ -1682,11 +1882,23 @@ fn add_beauty_v16_scatter(geometry: &mut WindowSceneGeometry, scatter: &ScatterF
     }
 }
 
+#[cfg(test)]
 fn add_beauty_v16_human(
     geometry: &mut WindowSceneGeometry,
     human: &HumanProxyV16,
     viewer_position: [f32; 3],
 ) {
+    geometry.world_flat_ellipse_with_surface_response(
+        [
+            human.position_world[0],
+            human.position_world[1],
+            human.position_world[2] + 0.006,
+        ],
+        [0.34, 0.16],
+        16,
+        [0.018, 0.015, 0.012, 0.22],
+        WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+    );
     geometry.add_humanoid_proxy(
         WindowHumanoidProxyInstance::new(
             [human.position_world[0], human.position_world[1]],
@@ -1727,8 +1939,25 @@ fn add_beauty_v16_human(
         [0.16, 0.27, 0.29, 0.62],
         WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH,
     );
+    geometry.world_ellipsoid_with_surface_response(
+        [
+            human.position_world[0],
+            human.position_world[1] - 0.018,
+            human.position_world[2] + human.height_meters * 0.91,
+        ],
+        [
+            human.head_radius_meters * 0.86,
+            human.head_radius_meters * 0.74,
+            human.head_radius_meters * 0.52,
+        ],
+        4,
+        8,
+        [0.045, 0.035, 0.028, 0.74],
+        WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH,
+    );
 }
 
+#[cfg(test)]
 fn add_beauty_v16_vehicle(geometry: &mut WindowSceneGeometry, vehicle: &VehicleProxyV16) {
     let [x, y, z] = vehicle.position_world;
     let length = vehicle.length_meters;
@@ -1769,6 +1998,17 @@ fn add_beauty_v16_vehicle(geometry: &mut WindowSceneGeometry, vehicle: &VehicleP
         WINDOW_SURFACE_RESPONSE_GLASS,
     );
 
+    for seam in [-0.22_f32, 0.0, 0.22] {
+        geometry.world_oriented_rect_with_surface_response(
+            [x + length * seam, y, body_z + vehicle.height_meters * 0.11],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [half_width * 0.78, 0.012],
+            [0.025, 0.026, 0.025, 0.46],
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
+    }
+
     for axle in [-0.34_f32, 0.34] {
         for side in [-1.0_f32, 1.0] {
             geometry.world_ellipsoid_with_surface_response(
@@ -1785,6 +2025,24 @@ fn add_beauty_v16_vehicle(geometry: &mut WindowSceneGeometry, vehicle: &VehicleP
                 4,
                 10,
                 [0.026, 0.025, 0.023, 0.9],
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+            geometry.world_ellipse_ring_with_surface_response(
+                [
+                    x + axle * length,
+                    y + side * half_width * 0.86,
+                    z + vehicle.wheel_radius_meters,
+                ],
+                [
+                    vehicle.wheel_radius_meters * 0.34,
+                    vehicle.wheel_radius_meters * 0.08,
+                ],
+                [
+                    vehicle.wheel_radius_meters * 0.74,
+                    vehicle.wheel_radius_meters * 0.16,
+                ],
+                12,
+                [0.13, 0.13, 0.12, 0.50],
                 WINDOW_SURFACE_RESPONSE_METAL,
             );
         }
@@ -1805,6 +2063,881 @@ fn add_beauty_v16_vehicle(geometry: &mut WindowSceneGeometry, vehicle: &VehicleP
     }
 }
 
+fn add_beauty_v17_sky_detail(geometry: &mut WindowSceneGeometry, frame_index: u64) {
+    let pulse = (frame_index as f32 * 0.0028).sin().mul_add(0.5, 0.5);
+    let far_depth = 0.986;
+
+    geometry.screen_rect(
+        [-1.0, -1.0],
+        [1.0, 1.0],
+        far_depth,
+        [0.42, 0.53, 0.65, 0.30],
+    );
+    geometry.screen_rect(
+        [-1.0, -0.24],
+        [1.0, 0.32],
+        far_depth - 0.003,
+        [0.70, 0.66, 0.56, 0.17],
+    );
+    geometry.screen_rect(
+        [-1.0, 0.32],
+        [1.0, 1.0],
+        far_depth - 0.002,
+        [0.22, 0.30, 0.38, 0.10],
+    );
+
+    let sun = [0.50, -0.54];
+    for (radius, alpha) in [(0.34, 0.045), (0.19, 0.10), (0.064, 0.76)] {
+        geometry.screen_ellipse(
+            sun,
+            [radius, radius],
+            40,
+            far_depth - 0.012,
+            [1.0, 0.86, 0.58, alpha + pulse * 0.03],
+        );
+    }
+
+    let moon = [-0.60, 0.55];
+    geometry.screen_ellipse(
+        moon,
+        [0.074, 0.074],
+        32,
+        far_depth - 0.011,
+        [0.78, 0.84, 0.88, 0.40],
+    );
+    geometry.screen_ellipse(
+        [moon[0] + 0.034, moon[1] - 0.006],
+        [0.061, 0.066],
+        32,
+        far_depth - 0.012,
+        [0.31, 0.40, 0.50, 0.47],
+    );
+
+    for layer in 0..4 {
+        let y = -0.18 + layer as f32 * 0.20;
+        let drift = (frame_index as f32 * (0.0007 + layer as f32 * 0.00028)).fract();
+        for cluster in 0..9 {
+            let seed = 0xC10D_1700 + layer * 131 + cluster;
+            let x = -1.10 + cluster as f32 * 0.28 + drift * 0.17;
+            let rough = v16_unit(seed, frame_index / 64 + 1);
+            geometry.screen_ellipse(
+                [x, y + (rough - 0.5) * 0.060],
+                [0.15 + rough * 0.12, 0.030 + layer as f32 * 0.010],
+                22,
+                far_depth - 0.017 - layer as f32 * 0.002,
+                [
+                    0.76 - layer as f32 * 0.070,
+                    0.79 - layer as f32 * 0.060,
+                    0.78 - layer as f32 * 0.050,
+                    0.095 + layer as f32 * 0.030,
+                ],
+            );
+        }
+    }
+}
+
+fn add_beauty_v17_road(geometry: &mut WindowSceneGeometry, road: &RoadPatchV17) {
+    for (segment_index, segment) in road.centerline_world.windows(2).enumerate() {
+        let start = segment[0];
+        let end = segment[1];
+        let Some(right) = v16_segment_right(start, end) else {
+            continue;
+        };
+        let forward = v16_segment_forward(start, end);
+        let half_width = road.width_meters * 0.5;
+        let crown = road.crown_height_meters.max(0.008);
+        let seed = road.irregularity.seed ^ (segment_index as u64 * 0x1700);
+
+        let left_start = [
+            start[0] + right[0] * half_width,
+            start[1] + right[1] * half_width,
+            start[2] + crown * 0.30,
+        ];
+        let left_end = [
+            end[0] + right[0] * half_width,
+            end[1] + right[1] * half_width,
+            end[2] + crown * 0.30,
+        ];
+        let right_end = [
+            end[0] - right[0] * half_width,
+            end[1] - right[1] * half_width,
+            end[2] + crown * 0.30,
+        ];
+        let right_start = [
+            start[0] - right[0] * half_width,
+            start[1] - right[1] * half_width,
+            start[2] + crown * 0.30,
+        ];
+
+        geometry.world_quad_with_surface_response(
+            left_start,
+            left_end,
+            right_end,
+            right_start,
+            [0.052, 0.050, 0.046, 1.0],
+            WINDOW_SURFACE_RESPONSE_WET_ROAD,
+        );
+
+        for side in [-1.0_f32, 1.0] {
+            let edge_center = [
+                (start[0] + end[0]) * 0.5 + right[0] * half_width * side,
+                (start[1] + end[1]) * 0.5 + right[1] * half_width * side,
+                (start[2] + end[2]) * 0.5 + 0.019,
+            ];
+            geometry.world_oriented_rect_with_surface_response(
+                edge_center,
+                [forward[0], forward[1], 0.0],
+                [right[0] * side, right[1] * side, 0.0],
+                [
+                    0.95 + v16_unit(seed, 40 + side.to_bits() as u64) * 0.38,
+                    0.030 + road.edge_noise_meters * 0.18,
+                ],
+                [0.020, 0.017, 0.012, 0.26],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+
+        for crack in 0..7 {
+            let crack_seed = seed ^ (crack as u64 * 0xC4AC);
+            let t = 0.08 + crack as f32 * 0.14 + v16_signed(crack_seed, 1) * 0.032;
+            let lateral = v16_signed(crack_seed, 2) * half_width * 0.66;
+            let center = [
+                start[0] + (end[0] - start[0]) * t + right[0] * lateral,
+                start[1] + (end[1] - start[1]) * t + right[1] * lateral,
+                start[2] + 0.021 + crack as f32 * 0.0004,
+            ];
+            geometry.world_oriented_rect_with_surface_response(
+                center,
+                [forward[0], forward[1], 0.0],
+                [right[0], right[1], 0.0],
+                [
+                    0.14 + v16_unit(crack_seed, 3) * 0.26,
+                    0.007 + v16_unit(crack_seed, 4) * 0.017,
+                ],
+                [0.012, 0.010, 0.008, 0.42],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+
+        let pothole_count = road.pothole_count.clamp(1, 4) as usize;
+        for pothole in 0..pothole_count {
+            let pothole_seed = seed ^ (pothole as u64 * 0xF07E);
+            let t = 0.18 + pothole as f32 * 0.20 + v16_signed(pothole_seed, 1) * 0.04;
+            let lateral = v16_signed(pothole_seed, 2) * half_width * 0.45;
+            geometry.world_flat_ellipse_with_surface_response(
+                [
+                    start[0] + (end[0] - start[0]) * t + right[0] * lateral,
+                    start[1] + (end[1] - start[1]) * t + right[1] * lateral,
+                    start[2] + 0.023,
+                ],
+                [
+                    0.16 + v16_unit(pothole_seed, 3) * 0.22,
+                    0.055 + v16_unit(pothole_seed, 4) * 0.08,
+                ],
+                18,
+                [0.016, 0.014, 0.011, 0.40],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+    }
+}
+
+fn add_beauty_v17_curb(geometry: &mut WindowSceneGeometry, curb: &CurbSegmentV17) {
+    let radius = curb
+        .bevel_radius_meters
+        .max(curb.height_meters * 0.28)
+        .min(curb.width_meters * 0.55);
+    geometry.world_cylinder_between_with_surface_response(
+        curb.start_world,
+        curb.end_world,
+        radius,
+        16,
+        [0.32, 0.31, 0.285, 1.0],
+        WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+    );
+
+    let Some(right) = v16_segment_right(curb.start_world, curb.end_world) else {
+        return;
+    };
+    let chip_count = (curb.chip_density_0_to_1 * 13.0).ceil().clamp(2.0, 8.0) as usize;
+    for chip in 0..chip_count {
+        let t = (chip as f32 + 0.5) / chip_count as f32;
+        let center = v17_lerp3(curb.start_world, curb.end_world, t);
+        let seed = curb.irregularity.seed ^ (chip as u64 * 0xC0B);
+        geometry.world_flat_ellipse_with_surface_response(
+            [
+                center[0] + right[0] * v16_signed(seed, 1) * curb.width_meters * 0.35,
+                center[1] + right[1] * v16_signed(seed, 1) * curb.width_meters * 0.35,
+                center[2] + curb.height_meters * 0.45,
+            ],
+            [
+                0.045 + v16_unit(seed, 2) * 0.070,
+                0.018 + v16_unit(seed, 3) * 0.030,
+            ],
+            10,
+            [0.10, 0.086, 0.064, 0.34],
+            WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+        );
+    }
+}
+
+fn add_beauty_v17_facade(geometry: &mut WindowSceneGeometry, facade: &FacadeModuleV17) {
+    let seed = facade.object_id.0 ^ facade.irregularity.seed;
+    let bounds = &facade.bounds;
+    let y_span = (bounds.max[1] - bounds.min[1]).abs().max(1.0);
+    let z_span = (bounds.max[2] - bounds.min[2]).abs().max(1.0);
+    let face_x = if bounds.max[0].abs() > bounds.min[0].abs() {
+        bounds.min[0] - 0.012
+    } else {
+        bounds.max[0] + 0.012
+    };
+
+    geometry.world_quad_with_surface_response(
+        [face_x, bounds.min[1], bounds.min[2]],
+        [
+            face_x + v16_signed(seed, 1) * facade.facade_warp_meters,
+            bounds.max[1],
+            bounds.min[2] + 0.055,
+        ],
+        [face_x, bounds.max[1], bounds.max[2]],
+        [
+            face_x + v16_signed(seed, 2) * facade.facade_warp_meters,
+            bounds.min[1],
+            bounds.max[2] - 0.070,
+        ],
+        [0.29, 0.274, 0.244, 1.0],
+        WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+    );
+
+    let panel_count = (y_span / 1.15).ceil().clamp(5.0, 16.0) as usize;
+    for panel in 0..panel_count {
+        let y = bounds.min[1] + y_span * ((panel as f32 + 0.5) / panel_count as f32);
+        let z = bounds.min[2] + z_span * (0.14 + v16_unit(seed, panel as u64) * 0.76);
+        geometry.world_oriented_rect_with_surface_response(
+            [face_x + 0.004, y, z],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.18 + v16_unit(seed, 101 + panel as u64) * 0.22, 0.014],
+            [0.066, 0.058, 0.045, 0.22 + facade.dirt_0_to_1 * 0.20],
+            WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+        );
+    }
+
+    let window_count = facade.window_count.clamp(2, 14) as usize;
+    for index in 0..window_count {
+        let y_t = (index as f32 + 0.5) / window_count as f32;
+        let floor = (index % 5) as f32;
+        let y = bounds.min[1] + y_span * y_t;
+        let z = (bounds.min[2] + 1.10 + (floor + 0.20) * (z_span / 6.0).clamp(0.46, 1.10))
+            .min(bounds.max[2] - 0.38);
+        let glass_alpha = 0.30 + v16_unit(seed, index as u64) * 0.16;
+        geometry.world_oriented_rect_with_surface_response(
+            [face_x, y, z],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.145, 0.220],
+            [0.30, 0.43, 0.48, glass_alpha],
+            WINDOW_SURFACE_RESPONSE_GLASS,
+        );
+        geometry.world_oriented_rect_with_surface_response(
+            [face_x + 0.003, y, z],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.175, 0.012],
+            [0.045, 0.045, 0.041, 0.60],
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
+        geometry.world_oriented_rect_with_surface_response(
+            [face_x + 0.004, y, z],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [0.235, 0.010],
+            [0.045, 0.045, 0.041, 0.58],
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
+    }
+
+    for door in 0..facade.door_count.clamp(1, 2) {
+        let y = bounds.min[1] + y_span * (0.24 + door as f32 * 0.34);
+        geometry.world_oriented_rect_with_surface_response(
+            [
+                face_x + facade.inset_depth_meters * 0.035,
+                y,
+                bounds.min[2] + 0.86,
+            ],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.31, 0.78],
+            [0.075, 0.066, 0.056, 0.92],
+            WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+        );
+    }
+
+    for vent in 0..facade.vent_count.clamp(1, 6) {
+        let y = bounds.min[1] + y_span * ((vent as f32 + 0.7) / 6.7);
+        let z = bounds.min[2] + 0.55 + v16_unit(seed, 201 + vent as u64) * z_span * 0.50;
+        geometry.world_oriented_rect_with_surface_response(
+            [face_x + 0.006, y, z],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.18, 0.055],
+            [0.070, 0.074, 0.071, 0.74],
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
+    }
+
+    for stain in 0..facade.poster_or_stain_count.clamp(2, 8) {
+        let y = bounds.min[1] + y_span * v16_unit(seed, 301 + stain as u64);
+        let z = bounds.min[2] + z_span * (0.20 + v16_unit(seed, 401 + stain as u64) * 0.68);
+        let paper = stain % 3 == 0;
+        geometry.world_oriented_rect_with_surface_response(
+            [face_x + 0.008, y, z],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [
+                0.10 + v16_unit(seed, 501 + stain as u64) * 0.16,
+                0.045 + v16_unit(seed, 601 + stain as u64) * 0.12,
+            ],
+            if paper {
+                [0.42, 0.39, 0.30, 0.28]
+            } else {
+                [0.034, 0.028, 0.021, 0.30 + facade.dirt_0_to_1 * 0.16]
+            },
+            WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+        );
+    }
+
+    for pipe in 0..facade.pipe_mount_count.clamp(1, 4) {
+        let y = bounds.min[1]
+            + y_span * (0.18 + pipe as f32 * 0.23 + v16_signed(seed, 701 + pipe as u64) * 0.035);
+        geometry.world_cylinder_between_with_surface_response(
+            [face_x + 0.020, y, bounds.min[2] + 0.12],
+            [
+                face_x + 0.020,
+                y + v16_signed(seed, 801 + pipe as u64) * 0.10,
+                bounds.max[2] - 0.16,
+            ],
+            0.022 + v16_unit(seed, 901 + pipe as u64) * 0.018,
+            9,
+            [0.050, 0.052, 0.049, 0.92],
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
+    }
+
+    geometry.world_cylinder_between_with_surface_response(
+        [face_x, bounds.min[1], bounds.max[2] + 0.020],
+        [face_x, bounds.max[1], bounds.max[2] + 0.035],
+        facade.bevel_radius_meters.clamp(0.026, 0.070),
+        12,
+        [0.18, 0.17, 0.15, 1.0],
+        WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+    );
+}
+
+fn add_beauty_v17_curve_object(geometry: &mut WindowSceneGeometry, curve: &CurveObjectV17) {
+    let segments = if curve.radius_meters < 0.03 { 8 } else { 12 };
+    let dirt = curve.surface_dirt_0_to_1.clamp(0.0, 1.0);
+    let color = [
+        0.040 + dirt * 0.040,
+        0.042 + dirt * 0.034,
+        0.040 + dirt * 0.026,
+        0.88 + (1.0 - dirt) * 0.10,
+    ];
+    for segment in curve.points_world.windows(2) {
+        if curve.sag_meters > 0.01 {
+            let mid = [
+                (segment[0][0] + segment[1][0]) * 0.5,
+                (segment[0][1] + segment[1][1]) * 0.5,
+                (segment[0][2] + segment[1][2]) * 0.5 - curve.sag_meters,
+            ];
+            geometry.world_cylinder_between_with_surface_response(
+                segment[0],
+                mid,
+                curve.radius_meters,
+                segments,
+                color,
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+            geometry.world_cylinder_between_with_surface_response(
+                mid,
+                segment[1],
+                curve.radius_meters,
+                segments,
+                color,
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+        } else {
+            geometry.world_cylinder_between_with_surface_response(
+                segment[0],
+                segment[1],
+                curve.radius_meters,
+                segments,
+                color,
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+        }
+    }
+}
+
+fn add_beauty_v17_puddle(geometry: &mut WindowSceneGeometry, puddle: &GroundedPuddleV17) {
+    if !puddle.is_ground_anchored() {
+        return;
+    }
+
+    geometry.world_flat_ellipse_with_surface_response(
+        [
+            puddle.center_world[0],
+            puddle.center_world[1],
+            puddle.center_world[2] + 0.002,
+        ],
+        [puddle.radius_meters, puddle.radius_meters * 0.54],
+        28,
+        [0.052, 0.135, 0.160, 0.42],
+        WINDOW_SURFACE_RESPONSE_WET_ROAD,
+    );
+    geometry.world_ellipse_ring_with_surface_response(
+        [
+            puddle.center_world[0],
+            puddle.center_world[1],
+            puddle.center_world[2] + 0.004,
+        ],
+        [puddle.radius_meters * 0.66, puddle.radius_meters * 0.31],
+        [puddle.radius_meters, puddle.radius_meters * 0.54],
+        28,
+        [0.70, 0.79, 0.74, 0.18],
+        WINDOW_SURFACE_RESPONSE_WET_ROAD,
+    );
+    geometry.world_oriented_rect_with_surface_response(
+        [
+            puddle.center_world[0] + puddle.radius_meters * 0.12,
+            puddle.center_world[1] - puddle.radius_meters * 0.10,
+            puddle.center_world[2] + 0.006,
+        ],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [puddle.radius_meters * 0.24, 0.012],
+        [0.78, 0.86, 0.82, 0.16],
+        WINDOW_SURFACE_RESPONSE_WET_ROAD,
+    );
+}
+
+fn add_beauty_v17_scatter(geometry: &mut WindowSceneGeometry, scatter: &ScatterFieldV17) {
+    let count = ((scatter.item_count_budget as f32 * scatter.density_0_to_1)
+        .ceil()
+        .clamp(8.0, 22.0)) as usize;
+    let span = v17_bounds_span(&scatter.bounds);
+
+    for index in 0..count {
+        let seed = scatter.seed ^ index as u64;
+        let x = scatter.bounds.min[0] + span[0] * v16_unit(seed, 1);
+        let y = scatter.bounds.min[1] + span[1] * v16_unit(seed, 2);
+        let z = scatter.bounds.min[2] + 0.026 + v16_unit(seed, 3) * 0.018;
+        let kind = index % 5;
+
+        if scatter.has_paper && kind == 0 {
+            geometry.world_oriented_rect_with_surface_response(
+                [x, y, z],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [
+                    0.055 + v16_unit(seed, 4) * 0.080,
+                    0.030 + v16_unit(seed, 5) * 0.045,
+                ],
+                [0.34, 0.31, 0.22, 0.36],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        } else if scatter.has_cable_clutter && kind == 1 {
+            let end = [
+                x + v16_signed(seed, 4) * 0.34,
+                y + v16_signed(seed, 5) * 0.34,
+                z + 0.004,
+            ];
+            geometry.world_cylinder_between_with_surface_response(
+                [x, y, z],
+                end,
+                0.010 + v16_unit(seed, 6) * 0.006,
+                6,
+                [0.028, 0.029, 0.027, 0.76],
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+        } else if scatter.has_broken_glass && kind == 2 {
+            geometry.world_oriented_rect_with_surface_response(
+                [x, y, z + 0.004],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [
+                    0.022 + v16_unit(seed, 7) * 0.035,
+                    0.012 + v16_unit(seed, 8) * 0.022,
+                ],
+                [0.62, 0.78, 0.80, 0.22],
+                WINDOW_SURFACE_RESPONSE_GLASS,
+            );
+        } else {
+            let radius = 0.022 + v16_unit(seed, 9) * 0.055;
+            geometry.world_ellipsoid_with_surface_response(
+                [x, y, z],
+                [radius * 1.7, radius, radius * 0.42],
+                3,
+                7,
+                [0.075, 0.061, 0.045, 0.72],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+    }
+}
+
+fn add_beauty_v17_human(geometry: &mut WindowSceneGeometry, human: &HumanProxyV17) {
+    if !human.is_proportionate_non_rod() {
+        return;
+    }
+
+    let base = human.position_world;
+    let (forward, right) = v17_yaw_vectors(human.facing_yaw_radians);
+    let height = human.height_meters;
+    let shoulder = human.shoulder_width_meters;
+    let hip = human.hip_width_meters;
+    let walk = (human.animation_phase_0_to_1 * std::f32::consts::TAU).sin()
+        * human.walk_cycle_weight_0_to_1
+        * 0.08;
+
+    geometry.world_flat_ellipse_with_surface_response(
+        [base[0], base[1], base[2] + 0.004],
+        [0.34, 0.16],
+        18,
+        [0.018, 0.015, 0.012, 0.24],
+        WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+    );
+    geometry.world_ellipsoid_with_surface_response(
+        v17_offset(base, forward, right, 0.0, 0.0, height * 0.49),
+        [shoulder * 0.38, shoulder * 0.23, height * 0.16],
+        5,
+        12,
+        [0.13, 0.23, 0.25, 0.78],
+        WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH,
+    );
+    geometry.world_ellipsoid_with_surface_response(
+        v17_offset(base, forward, right, -0.01, 0.0, height * 0.32),
+        [hip * 0.44, hip * 0.24, height * 0.075],
+        4,
+        10,
+        [0.075, 0.090, 0.105, 0.82],
+        WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH,
+    );
+    geometry.world_cylinder_between_with_surface_response(
+        v17_offset(base, forward, right, 0.0, 0.0, height * 0.62),
+        v17_offset(base, forward, right, 0.0, 0.0, height * 0.70),
+        0.040,
+        8,
+        [0.42, 0.30, 0.22, 0.78],
+        WINDOW_SURFACE_RESPONSE_HUMAN_SKIN,
+    );
+    geometry.world_ellipsoid_with_surface_response(
+        v17_offset(base, forward, right, 0.0, 0.0, height * 0.80),
+        [
+            human.head_radius_meters * 0.86,
+            human.head_radius_meters * 0.74,
+            human.head_radius_meters * 1.02,
+        ],
+        5,
+        12,
+        [0.50, 0.36, 0.27, 0.76],
+        WINDOW_SURFACE_RESPONSE_HUMAN_SKIN,
+    );
+    geometry.world_ellipsoid_with_surface_response(
+        v17_offset(base, forward, right, -0.020, 0.0, height * 0.88),
+        [
+            human.head_radius_meters * 0.95,
+            human.head_radius_meters * 0.78,
+            human.head_radius_meters * 0.50,
+        ],
+        4,
+        10,
+        [0.038, 0.030, 0.025, 0.80],
+        WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH,
+    );
+
+    for side in [-1.0_f32, 1.0] {
+        let arm_phase = walk * side;
+        geometry.world_cylinder_between_with_surface_response(
+            v17_offset(
+                base,
+                forward,
+                right,
+                0.0,
+                side * shoulder * 0.36,
+                height * 0.57,
+            ),
+            v17_offset(
+                base,
+                forward,
+                right,
+                arm_phase,
+                side * shoulder * 0.45,
+                height * 0.34,
+            ),
+            0.034,
+            8,
+            [0.12, 0.21, 0.23, 0.72],
+            WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH,
+        );
+        geometry.world_ellipsoid_with_surface_response(
+            v17_offset(
+                base,
+                forward,
+                right,
+                arm_phase,
+                side * shoulder * 0.47,
+                height * 0.30,
+            ),
+            [0.035, 0.022, 0.028],
+            3,
+            8,
+            [0.44, 0.31, 0.23, 0.70],
+            WINDOW_SURFACE_RESPONSE_HUMAN_SKIN,
+        );
+        geometry.world_cylinder_between_with_surface_response(
+            v17_offset(
+                base,
+                forward,
+                right,
+                -walk * side,
+                side * hip * 0.28,
+                height * 0.30,
+            ),
+            v17_offset(
+                base,
+                forward,
+                right,
+                walk * side,
+                side * hip * 0.25,
+                height * 0.055,
+            ),
+            0.045,
+            9,
+            [0.060, 0.075, 0.090, 0.84],
+            WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH,
+        );
+        geometry.world_ellipsoid_with_surface_response(
+            v17_offset(
+                base,
+                forward,
+                right,
+                0.050 + walk * side,
+                side * hip * 0.24,
+                height * 0.032,
+            ),
+            [0.080, 0.030, 0.026],
+            3,
+            8,
+            [0.030, 0.027, 0.024, 0.86],
+            WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH,
+        );
+    }
+}
+
+fn add_beauty_v17_vehicle(geometry: &mut WindowSceneGeometry, vehicle: &VehicleProxyV17) {
+    if !vehicle.is_proportionate_non_box() {
+        return;
+    }
+
+    let base = vehicle.position_world;
+    let (forward, right) = v17_yaw_vectors(vehicle.facing_yaw_radians);
+    let length = vehicle.length_meters;
+    let half_width = vehicle.width_meters * 0.5;
+    let body_z = vehicle.wheel_radius_meters + vehicle.height_meters * 0.22;
+    let dirt_shadow = (0.18 + vehicle.dirt_0_to_1 * 0.24).clamp(0.18, 0.50);
+
+    geometry.world_ellipse_ring_with_surface_response(
+        [base[0], base[1], base[2] + 0.030],
+        [length * 0.28, half_width * 0.45],
+        [length * 0.64, half_width * 0.80],
+        28,
+        [0.024, 0.021, 0.018, dirt_shadow],
+        WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+    );
+    geometry.world_ellipsoid_with_surface_response(
+        v17_offset(base, forward, right, 0.0, 0.0, body_z),
+        [
+            length * 0.48,
+            half_width * 0.84,
+            vehicle.height_meters * 0.22,
+        ],
+        6,
+        16,
+        [0.17, 0.21, 0.23, 1.0],
+        WINDOW_SURFACE_RESPONSE_METAL,
+    );
+    geometry.world_ellipsoid_with_surface_response(
+        v17_offset(
+            base,
+            forward,
+            right,
+            -length * 0.06,
+            0.0,
+            body_z + vehicle.height_meters * 0.23,
+        ),
+        [
+            length * 0.24,
+            half_width * 0.54,
+            vehicle.height_meters * 0.16,
+        ],
+        5,
+        12,
+        [0.31, 0.45, 0.50, 0.60],
+        WINDOW_SURFACE_RESPONSE_GLASS,
+    );
+
+    for seam in [-0.24_f32, -0.02, 0.22] {
+        geometry.world_oriented_rect_with_surface_response(
+            v17_offset(
+                base,
+                forward,
+                right,
+                length * seam,
+                0.0,
+                body_z + vehicle.height_meters * 0.12,
+            ),
+            [right[0], right[1], 0.0],
+            [0.0, 0.0, 1.0],
+            [half_width * 0.74, 0.011],
+            [0.022, 0.023, 0.022, 0.48],
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
+    }
+
+    for axle in [-0.34_f32, 0.34] {
+        let axle_center = v17_offset(
+            base,
+            forward,
+            right,
+            axle * length,
+            0.0,
+            vehicle.wheel_radius_meters,
+        );
+        geometry.world_cylinder_between_with_surface_response(
+            v17_offset(axle_center, forward, right, 0.0, -half_width * 0.72, 0.0),
+            v17_offset(axle_center, forward, right, 0.0, half_width * 0.72, 0.0),
+            0.026,
+            8,
+            [0.040, 0.040, 0.038, 0.80],
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
+        for side in [-1.0_f32, 1.0] {
+            let wheel_center = v17_offset(
+                base,
+                forward,
+                right,
+                axle * length,
+                side * half_width * 0.86,
+                vehicle.wheel_radius_meters,
+            );
+            geometry.world_ellipsoid_with_surface_response(
+                wheel_center,
+                [
+                    vehicle.wheel_radius_meters * 0.95,
+                    vehicle.wheel_radius_meters * 0.28,
+                    vehicle.wheel_radius_meters,
+                ],
+                5,
+                12,
+                [0.022, 0.022, 0.020, 0.92],
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+            geometry.world_ellipse_ring_with_surface_response(
+                wheel_center,
+                [
+                    vehicle.wheel_radius_meters * 0.34,
+                    vehicle.wheel_radius_meters * 0.08,
+                ],
+                [
+                    vehicle.wheel_radius_meters * 0.74,
+                    vehicle.wheel_radius_meters * 0.16,
+                ],
+                14,
+                [0.13, 0.13, 0.12, 0.52],
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+        }
+    }
+
+    for (offset, color) in [
+        (length * 0.52, [0.95, 0.82, 0.52, 0.30]),
+        (-length * 0.52, [0.82, 0.085, 0.050, 0.30]),
+    ] {
+        geometry.world_oriented_rect_with_surface_response(
+            v17_offset(
+                base,
+                forward,
+                right,
+                offset,
+                0.0,
+                body_z + vehicle.height_meters * 0.03,
+            ),
+            [right[0], right[1], 0.0],
+            [0.0, 0.0, 1.0],
+            [half_width * 0.20, 0.052],
+            color,
+            WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE,
+        );
+    }
+
+    for side in [-1.0_f32, 1.0] {
+        geometry.world_ellipsoid_with_surface_response(
+            v17_offset(
+                base,
+                forward,
+                right,
+                length * 0.12,
+                side * half_width * 1.02,
+                body_z + vehicle.height_meters * 0.17,
+            ),
+            [0.090, 0.025, 0.040],
+            3,
+            8,
+            [0.030, 0.033, 0.034, 0.72],
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
+    }
+}
+
+fn v17_bounds_span(bounds: &BeautyBoundsV17) -> [f32; 3] {
+    [
+        (bounds.max[0] - bounds.min[0]).abs().max(0.001),
+        (bounds.max[1] - bounds.min[1]).abs().max(0.001),
+        (bounds.max[2] - bounds.min[2]).abs().max(0.001),
+    ]
+}
+
+fn v17_lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
+
+fn v17_yaw_vectors(yaw: f32) -> ([f32; 2], [f32; 2]) {
+    let forward = [yaw.cos(), yaw.sin()];
+    let right = [-forward[1], forward[0]];
+    (forward, right)
+}
+
+fn v17_offset(
+    base: [f32; 3],
+    forward: [f32; 2],
+    right: [f32; 2],
+    forward_meters: f32,
+    right_meters: f32,
+    z_meters: f32,
+) -> [f32; 3] {
+    [
+        base[0] + forward[0] * forward_meters + right[0] * right_meters,
+        base[1] + forward[1] * forward_meters + right[1] * right_meters,
+        base[2] + z_meters,
+    ]
+}
+
+#[cfg(test)]
 fn v16_bounds_span(bounds: &BeautyBoundsV16) -> [f32; 3] {
     [
         (bounds.max[0] - bounds.min[0]).abs().max(0.001),
@@ -1821,6 +2954,17 @@ fn v16_segment_right(start: [f32; 3], end: [f32; 3]) -> Option<[f32; 2]> {
         None
     } else {
         Some([-dy / len, dx / len])
+    }
+}
+
+fn v16_segment_forward(start: [f32; 3], end: [f32; 3]) -> [f32; 2] {
+    let dx = end[0] - start[0];
+    let dy = end[1] - start[1];
+    let len = (dx * dx + dy * dy).sqrt();
+    if len <= f32::EPSILON {
+        [0.0, 1.0]
+    } else {
+        [dx / len, dy / len]
     }
 }
 
@@ -1874,6 +3018,10 @@ impl WindowScene for AlleyWindowScene {
         let beauty_v16_report = self.beauty_scene_v16().validate_for_visual_realism();
         if self.render_mode == WindowRenderMode::Beauty && !beauty_v16_report.pass {
             eprintln!("Beauty V16 validation failed: {beauty_v16_report:?}");
+        }
+        let beauty_v17_report = self.beauty_scene_v17().validate_for_visual_realism();
+        if self.render_mode == WindowRenderMode::Beauty && !beauty_v17_report.pass {
+            eprintln!("Beauty V17 validation failed: {beauty_v17_report:?}");
         }
         let geometry = self.scene_geometry();
         let snapshot_light = self
@@ -2624,7 +3772,42 @@ mod tests {
         let beauty_scene_v16 = beauty.beauty_scene_v16();
         let beauty_v16_report = beauty_scene_v16.validate_for_visual_realism();
         let mut beauty_v16_geometry = WindowSceneGeometry::default();
+        add_beauty_v16_sky_detail(&mut beauty_v16_geometry, beauty.frame_index);
         beauty.add_beauty_v16_geometry(&mut beauty_v16_geometry);
+        let beauty_scene_v17 = beauty.beauty_scene_v17();
+        let beauty_v17_report = beauty_scene_v17.validate_for_visual_realism();
+        let beauty_v17_draw_list = BeautyDrawListV17::from_scene(&beauty_scene_v17);
+        let mut beauty_v17_geometry = WindowSceneGeometry::default();
+        beauty.add_beauty_v17_geometry(&mut beauty_v17_geometry);
+        let mut shifted_camera_beauty = scene_with_render_config(
+            WindowedRendererConfig::beauty_default("Ashfall - Beauty Mode"),
+        );
+        let anchored_humans_before = shifted_camera_beauty
+            .beauty_scene_v16()
+            .humans
+            .iter()
+            .map(|human| human.position_world)
+            .collect::<Vec<_>>();
+        let anchored_humans_v17_before = shifted_camera_beauty
+            .beauty_scene_v17()
+            .humans
+            .iter()
+            .map(|human| human.position_world)
+            .collect::<Vec<_>>();
+        shifted_camera_beauty.camera.position[0] += 0.01;
+        shifted_camera_beauty.camera.position[1] += 0.01;
+        let anchored_humans_after = shifted_camera_beauty
+            .beauty_scene_v16()
+            .humans
+            .iter()
+            .map(|human| human.position_world)
+            .collect::<Vec<_>>();
+        let anchored_humans_v17_after = shifted_camera_beauty
+            .beauty_scene_v17()
+            .humans
+            .iter()
+            .map(|human| human.position_world)
+            .collect::<Vec<_>>();
 
         assert!(!beauty.debug_overlay_enabled(|overlays| overlays.city_chunks));
         assert!(!beauty.debug_overlay_enabled(|overlays| overlays.streaming_cells));
@@ -2688,6 +3871,12 @@ mod tests {
             beauty_v16_report.pass,
             "Beauty V16 scene should pass the raised visual-realism bar: {beauty_v16_report:?}"
         );
+        assert!(beauty_scene_v16.humans.len() >= 2);
+        assert!(!beauty_scene_v16.vehicles.is_empty());
+        assert_eq!(
+            anchored_humans_before, anchored_humans_after,
+            "Beauty V16 humans should be anchored to world chunks, not fixed camera offsets"
+        );
         assert!(
             beauty_v16_geometry.vertices.len() > 1_000,
             "Beauty V16 bridge should produce visible high-detail geometry"
@@ -2719,6 +3908,54 @@ mod tests {
                 .vehicles
                 .iter()
                 .all(ashfall_rendering::beauty_v16::VehicleProxyV16::is_proportionate_non_box)
+        );
+        assert!(
+            beauty_v17_report.pass,
+            "Beauty V17 scene should pass the pivot visual-realism contract: {beauty_v17_report:?}"
+        );
+        assert!(beauty_v17_draw_list.has_sky_commands());
+        assert!(beauty_v17_draw_list.has_world_anchored_human_and_vehicle());
+        assert!(beauty_scene_v17.humans.len() >= 3);
+        assert!(!beauty_scene_v17.vehicles.is_empty());
+        assert_eq!(
+            anchored_humans_v17_before, anchored_humans_v17_after,
+            "Beauty V17 humans should be anchored to world chunks, not fixed camera offsets"
+        );
+        assert!(
+            beauty_v17_geometry.vertices.len() > 1_400,
+            "Beauty V17 bridge should produce visible high-detail geometry"
+        );
+        assert!(beauty_v17_geometry.vertices.iter().any(|vertex| {
+            vertex.surface_response == WINDOW_SURFACE_RESPONSE_GLASS && vertex.position[2] > 1.0
+        }));
+        assert!(beauty_v17_geometry.vertices.iter().any(|vertex| {
+            vertex.surface_response == WINDOW_SURFACE_RESPONSE_WET_ROAD && vertex.position[2] < 0.08
+        }));
+        assert!(beauty_v17_geometry.vertices.iter().any(|vertex| {
+            vertex.surface_response == WINDOW_SURFACE_RESPONSE_METAL && vertex.position[2] > 0.18
+        }));
+        assert!(beauty_v17_geometry.vertices.iter().any(|vertex| {
+            vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_SKIN
+                && vertex.position[2] > 0.8
+        }));
+        assert!(beauty_scene_v17.environment.readable_without_neon());
+        assert!(
+            beauty_scene_v17
+                .cells
+                .iter()
+                .all(|cell| cell.is_valid_beauty_cell())
+        );
+        assert!(
+            beauty_scene_v17
+                .humans
+                .iter()
+                .all(ashfall_rendering::beauty_v17::HumanProxyV17::is_proportionate_non_rod)
+        );
+        assert!(
+            beauty_scene_v17
+                .vehicles
+                .iter()
+                .all(ashfall_rendering::beauty_v17::VehicleProxyV17::is_proportionate_non_box)
         );
     }
 
