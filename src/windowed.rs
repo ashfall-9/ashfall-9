@@ -38,6 +38,7 @@ use ashfall_worldgen::{
     persistent_city_state_from_events, plan_city_cell_streaming,
 };
 
+use crate::beauty_scene_v15_bridge::build_beauty_scene_v15;
 #[cfg(test)]
 use crate::core::QualityTier;
 use crate::core::{MaterialDescriptor, MaterialId, MaterialState, Vec3};
@@ -629,9 +630,9 @@ impl AlleyWindowScene {
         let event_glow = (self.last_event_count as f32 / 42.0).clamp(0.0, 1.0);
 
         [
-            0.31 + x_wave * 0.05 + event_glow * 0.025,
-            0.38 + y_wave * 0.06 + z_glow * 0.02,
-            0.47 + z_glow * 0.07 + event_glow * 0.045,
+            0.38 + x_wave * 0.04 + event_glow * 0.018,
+            0.45 + y_wave * 0.05 + z_glow * 0.02,
+            0.54 + z_glow * 0.06 + event_glow * 0.032,
             1.0,
         ]
     }
@@ -679,6 +680,14 @@ impl AlleyWindowScene {
     #[cfg(test)]
     fn scene_vertices(&self) -> Vec<WindowSceneVertex> {
         self.scene_geometry().vertices
+    }
+
+    fn beauty_scene_v15(&self) -> ashfall_rendering::beauty::BeautySceneV15 {
+        build_beauty_scene_v15(
+            &self.city_template,
+            [self.camera.position[0], self.camera.position[1]],
+            self.frame_index,
+        )
     }
 
     fn city_streaming_visuals(&self) -> Vec<WindowCityStreamingCellVisual> {
@@ -945,7 +954,7 @@ impl AlleyWindowScene {
     }
 
     fn beauty_production_light(&self) -> WindowDynamicLight {
-        WindowDynamicLight::new([-1.8, -4.2, 4.4], 18.0, [1.0, 0.92, 0.78], 0.82)
+        WindowDynamicLight::new([-1.8, -4.2, 4.4], 18.0, [0.94, 0.9, 0.8], 0.74)
     }
 
     fn city_consequence_visuals(
@@ -1453,6 +1462,10 @@ impl WindowScene for AlleyWindowScene {
             steps += 1;
         }
         self.sync_render_snapshot(dt_seconds);
+        let beauty_v15_report = self.beauty_scene_v15().validate_for_beauty();
+        if self.render_mode == WindowRenderMode::Beauty && !beauty_v15_report.pass {
+            eprintln!("Beauty V15 validation failed: {beauty_v15_report:?}");
+        }
         let geometry = self.scene_geometry();
         let snapshot_light = self
             .last_snapshot
@@ -2197,6 +2210,8 @@ mod tests {
 
         let beauty_geometry = beauty.scene_geometry();
         let debug_geometry = debug.scene_geometry();
+        let beauty_scene_v15 = beauty.beauty_scene_v15();
+        let beauty_v15_report = beauty_scene_v15.validate_for_beauty();
 
         assert!(!beauty.debug_overlay_enabled(|overlays| overlays.city_chunks));
         assert!(!beauty.debug_overlay_enabled(|overlays| overlays.streaming_cells));
@@ -2231,6 +2246,31 @@ mod tests {
                 && vertex.surface_response == WINDOW_SURFACE_RESPONSE_METAL
                 && vertex.position[2] > 0.18
         }));
+        assert!(
+            beauty_v15_report.pass,
+            "Beauty V15 scene should pass the non-debug visual bar: {beauty_v15_report:?}"
+        );
+        assert!(beauty_scene_v15.environment.has_visible_sky());
+        assert!(beauty_scene_v15.environment.has_natural_light());
+        assert!(
+            beauty_scene_v15
+                .cells
+                .iter()
+                .flat_map(|cell| cell.puddles.iter())
+                .all(ashfall_rendering::beauty::AnchoredPuddleV15::is_ground_anchored)
+        );
+        assert!(
+            beauty_scene_v15
+                .humans
+                .iter()
+                .all(ashfall_rendering::beauty::HumanProxyV15::is_proportionate_non_rod)
+        );
+        assert!(
+            beauty_scene_v15
+                .vehicles
+                .iter()
+                .all(ashfall_rendering::beauty::VehicleProxyV15::is_proportionate_non_box)
+        );
     }
 
     #[test]

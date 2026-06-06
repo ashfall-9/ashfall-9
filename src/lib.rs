@@ -1,4 +1,5 @@
 pub mod beauty_scene_builder;
+pub mod beauty_scene_v15_bridge;
 pub mod scenarios;
 pub mod windowed;
 

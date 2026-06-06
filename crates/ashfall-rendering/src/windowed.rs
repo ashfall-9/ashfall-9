@@ -928,10 +928,10 @@ pub fn window_atmosphere_for_alley(
     let light_tint = if dynamic_light.is_enabled() {
         dynamic_light.color
     } else {
-        [0.78, 0.84, 0.92]
+        [0.86, 0.88, 0.9]
     };
-    let daylight = [0.48, 0.56, 0.66];
-    let neon_influence = light_energy * 0.1;
+    let daylight = [0.54, 0.6, 0.66];
+    let neon_influence = light_energy * 0.052;
     let fog_color = [
         daylight[0] + light_tint[0] * neon_influence + event_pressure * 0.035,
         daylight[1] + light_tint[1] * (neon_influence * 0.62 + pulse * 0.006),
@@ -939,9 +939,9 @@ pub fn window_atmosphere_for_alley(
     ];
     WindowAtmosphere::new(
         fog_color,
-        0.01 + pulse * 0.004 + event_pressure * 0.006,
-        1.22 + light_energy * 0.05 + event_pressure * 0.04,
-        0.075 + light_energy * 0.09 + event_pressure * 0.055,
+        0.011 + pulse * 0.004 + event_pressure * 0.006,
+        1.24 + light_energy * 0.045 + event_pressure * 0.04,
+        0.064 + light_energy * 0.074 + event_pressure * 0.055,
     )
 }
 
@@ -3383,6 +3383,39 @@ impl WindowSceneGeometry {
             [0.46, 0.56, 0.66, 1.0],
         );
         self.screen_rect([-1.0, 0.28], [1.0, 1.0], far_depth, [0.31, 0.39, 0.5, 1.0]);
+        self.screen_rect(
+            [-1.0, -0.58],
+            [1.0, -0.34],
+            far_depth - 0.001,
+            [0.72, 0.68, 0.58, 0.18],
+        );
+        self.screen_rect(
+            [-1.0, -0.36],
+            [1.0, -0.18],
+            far_depth - 0.002,
+            [0.58, 0.64, 0.66, 0.2],
+        );
+        self.screen_rect(
+            [-1.0, 0.52],
+            [1.0, 1.0],
+            far_depth - 0.001,
+            [0.22, 0.28, 0.38, 0.2],
+        );
+
+        for star in 0..22 {
+            let seed = 41_000 + star as u64;
+            let x = -0.96 + window_stable_unit(seed, 1) * 1.92;
+            let y = 0.36 + window_stable_unit(seed, 2) * 0.56;
+            let size = 0.0025 + window_stable_unit(seed, 3) * 0.003;
+            let twinkle =
+                0.08 + ((frame_index as f32 * 0.018 + star as f32 * 0.73).sin() * 0.5 + 0.5) * 0.1;
+            self.screen_rect(
+                [x - size, y - size],
+                [x + size, y + size],
+                far_depth - 0.009,
+                [0.82, 0.88, 0.95, twinkle],
+            );
+        }
 
         let sun_center = [0.68, -0.64];
         self.screen_ellipse(
@@ -3429,6 +3462,8 @@ impl WindowSceneGeometry {
             (2, [0.18, -0.38]),
             (3, [0.48, -0.08]),
             (4, [-0.58, 0.16]),
+            (5, [0.78, 0.28]),
+            (6, [-0.08, 0.38]),
         ] {
             let drift = ((frame_index as f32 * (0.0018 + cluster as f32 * 0.00035))
                 + cluster as f32 * 0.29)
@@ -3464,6 +3499,12 @@ impl WindowSceneGeometry {
                 [base_x + 0.3, base_y + 0.015],
                 far_depth - 0.003,
                 [0.54, 0.6, 0.64, cloud_alpha * 0.42],
+            );
+            self.screen_rect(
+                [base_x - 0.22, base_y - 0.052],
+                [base_x + 0.24, base_y - 0.034],
+                far_depth - 0.004,
+                [0.34, 0.4, 0.46, cloud_alpha * 0.36],
             );
         }
     }
@@ -5443,6 +5484,7 @@ impl WindowSceneGeometry {
 
         self.add_window_alley_natural_breakup();
         self.add_window_alley_irregular_ground_detail();
+        self.add_window_alley_version13_realism_pass();
 
         self.world_cylinder_between(
             [-5.72, -9.4, 2.65],
@@ -5655,6 +5697,310 @@ impl WindowSceneGeometry {
                 [0.018, 0.015, 0.012, 0.46],
                 WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
             );
+        }
+    }
+
+    fn add_window_alley_version13_realism_pass(&mut self) {
+        for (side, x, color) in [
+            (-1.0_f32, -4.92, [0.13, 0.12, 0.105, 0.98]),
+            (1.0, 4.92, [0.126, 0.118, 0.102, 0.98]),
+        ] {
+            self.world_cylinder_between_with_surface_response(
+                [x, -9.55, 0.116],
+                [x + side * 0.06, 13.55, 0.142],
+                0.07,
+                10,
+                color,
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+
+            for (index, y) in [-8.4_f32, -6.05, -3.2, -0.35, 2.1, 4.85, 7.9, 10.75, 12.45]
+                .into_iter()
+                .enumerate()
+            {
+                let seed = 52_000 + index as u64 + u64::from(side > 0.0) * 100;
+                let chip_x = x - side * (0.03 + window_stable_unit(seed, 1) * 0.08);
+                self.world_ellipsoid_with_surface_response(
+                    [chip_x, y + (window_stable_unit(seed, 2) - 0.5) * 0.42, 0.16],
+                    [
+                        0.12 + window_stable_unit(seed, 3) * 0.08,
+                        0.05 + window_stable_unit(seed, 4) * 0.045,
+                        0.025 + window_stable_unit(seed, 5) * 0.022,
+                    ],
+                    3,
+                    6,
+                    window_with_alpha(color, 0.82),
+                    WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+                );
+            }
+        }
+
+        for (center, radii, color, response) in [
+            (
+                [-3.15, -6.7, 0.019],
+                [0.68, 0.18],
+                [0.055, 0.12, 0.15, 0.26],
+                WINDOW_SURFACE_RESPONSE_WET_ROAD,
+            ),
+            (
+                [1.55, -4.15, 0.018],
+                [0.5, 0.14],
+                [0.075, 0.065, 0.05, 0.34],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            ),
+            (
+                [3.25, 0.65, 0.019],
+                [0.62, 0.17],
+                [0.05, 0.13, 0.16, 0.22],
+                WINDOW_SURFACE_RESPONSE_WET_ROAD,
+            ),
+            (
+                [-2.25, 4.1, 0.018],
+                [0.46, 0.13],
+                [0.08, 0.055, 0.035, 0.32],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            ),
+            (
+                [0.45, 9.35, 0.019],
+                [0.72, 0.21],
+                [0.05, 0.14, 0.15, 0.2],
+                WINDOW_SURFACE_RESPONSE_WET_ROAD,
+            ),
+        ] {
+            self.world_flat_ellipse_with_surface_response(center, radii, 14, color, response);
+        }
+
+        for (center, right, width, color) in [
+            (
+                [-3.35, -7.25, 0.074],
+                normalize3([0.94, 0.18, 0.0]),
+                0.68,
+                [0.018, 0.016, 0.013, 0.5],
+            ),
+            (
+                [1.82, -2.95, 0.075],
+                normalize3([0.7, -0.22, 0.0]),
+                0.48,
+                [0.026, 0.021, 0.016, 0.44],
+            ),
+            (
+                [-0.58, 2.4, 0.076],
+                normalize3([0.54, 0.38, 0.0]),
+                0.56,
+                [0.032, 0.027, 0.02, 0.38],
+            ),
+            (
+                [2.6, 7.75, 0.075],
+                normalize3([0.88, -0.12, 0.0]),
+                0.72,
+                [0.018, 0.017, 0.014, 0.42],
+            ),
+        ] {
+            self.world_oriented_rect_with_surface_response(
+                center,
+                right,
+                [0.0, 1.0, 0.0],
+                [width, 0.018],
+                color,
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+
+        for (west_wall, y, z, height, width, color) in [
+            (true, -8.3, 0.62, 0.82, 0.035, [0.03, 0.026, 0.021, 0.48]),
+            (true, -4.4, 0.42, 1.26, 0.045, [0.052, 0.058, 0.05, 0.36]),
+            (true, 1.65, 0.78, 1.05, 0.032, [0.026, 0.022, 0.018, 0.44]),
+            (true, 8.4, 0.55, 1.42, 0.038, [0.045, 0.054, 0.048, 0.34]),
+            (false, -6.8, 0.48, 1.18, 0.04, [0.034, 0.027, 0.022, 0.46]),
+            (false, -1.45, 0.68, 1.0, 0.032, [0.042, 0.05, 0.048, 0.34]),
+            (false, 4.35, 0.36, 1.36, 0.046, [0.026, 0.022, 0.018, 0.44]),
+            (false, 10.3, 0.82, 0.9, 0.03, [0.05, 0.058, 0.052, 0.32]),
+        ] {
+            let x = if west_wall { -5.43 } else { 5.43 };
+            let side = if west_wall { 1.0 } else { -1.0 };
+            self.world_oriented_rect_with_surface_response(
+                [x, y, z + height * 0.5],
+                [0.0, 1.0, 0.0],
+                normalize3([side * 0.08, 0.0, 1.0]),
+                [width, height * 0.5],
+                color,
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+            self.world_flat_ellipse_with_surface_response(
+                [x + side * 0.18, y, 0.022],
+                [0.14 + height * 0.1, 0.08],
+                10,
+                [0.04, 0.07, 0.068, 0.16],
+                WINDOW_SURFACE_RESPONSE_WET_ROAD,
+            );
+        }
+
+        for (x, y, warm) in [(-5.33, -2.65, true), (5.33, 6.85, false)] {
+            let light_color = if warm {
+                [0.92, 0.68, 0.36, 0.3]
+            } else {
+                [0.5, 0.62, 0.66, 0.18]
+            };
+            let metal_color = [0.064, 0.06, 0.052, 0.9];
+            self.world_ellipsoid_with_surface_response(
+                [x, y, 2.24],
+                [0.12, 0.08, 0.07],
+                4,
+                8,
+                light_color,
+                WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE,
+            );
+            self.world_cylinder_between_with_surface_response(
+                [x, y - 0.16, 2.26],
+                [x, y + 0.16, 2.26],
+                0.022,
+                8,
+                metal_color,
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+            self.world_oriented_rect_with_surface_response(
+                [x, y, 1.46],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.64, 0.72],
+                window_with_alpha(light_color, if warm { 0.08 } else { 0.05 }),
+                WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE,
+            );
+        }
+
+        for (x, y, radius, color) in [
+            (-4.46, -0.75, 0.18, [0.022, 0.02, 0.018, 0.9]),
+            (-4.18, -0.48, 0.13, [0.038, 0.032, 0.024, 0.84]),
+            (4.28, 3.65, 0.16, [0.028, 0.027, 0.025, 0.88]),
+            (4.52, 3.88, 0.11, [0.052, 0.042, 0.03, 0.82]),
+        ] {
+            self.world_ellipsoid_with_surface_response(
+                [x, y, 0.11 + radius * 0.42],
+                [radius * 1.15, radius * 0.82, radius * 0.58],
+                4,
+                8,
+                color,
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+            self.world_oriented_rect_with_surface_response(
+                [x, y - radius * 0.14, 0.09 + radius * 0.86],
+                [1.0, 0.0, 0.0],
+                normalize3([0.0, 0.32, 1.0]),
+                [radius * 0.58, 0.018],
+                [0.01, 0.009, 0.008, 0.32],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+
+        for (index, (x, y, angle, color)) in [
+            (-2.8, -8.85, 0.18_f32, [0.72, 0.66, 0.52, 0.52]),
+            (1.25, -6.15, -0.36, [0.46, 0.52, 0.5, 0.46]),
+            (3.85, -1.15, 0.52, [0.58, 0.46, 0.34, 0.5]),
+            (-3.55, 2.45, -0.12, [0.36, 0.38, 0.34, 0.46]),
+            (2.7, 6.55, 0.28, [0.7, 0.62, 0.42, 0.44]),
+            (-1.15, 11.35, -0.44, [0.5, 0.54, 0.48, 0.42]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let right = normalize3([angle.cos(), angle.sin(), 0.0]);
+            self.world_oriented_rect_with_surface_response(
+                [x, y, 0.092 + index as f32 * 0.0005],
+                right,
+                normalize3([0.0, 0.08, 1.0]),
+                [0.14, 0.045],
+                color,
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+
+        for (x, y) in [(-3.95, -3.75), (4.18, 0.95), (-4.22, 7.15)] {
+            self.world_ellipse_ring_with_surface_response(
+                [x, y, 0.105],
+                [0.12, 0.045],
+                [0.28, 0.095],
+                12,
+                [0.012, 0.012, 0.011, 0.84],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+            self.world_cylinder_between_with_surface_response(
+                [x - 0.18, y + 0.04, 0.118],
+                [x + 0.2, y - 0.02, 0.13],
+                0.012,
+                6,
+                [0.014, 0.014, 0.013, 0.82],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+
+        for (x, y, z, length, color, response) in [
+            (
+                -3.18,
+                -2.4,
+                0.15,
+                0.34,
+                [0.06, 0.072, 0.07, 0.74],
+                WINDOW_SURFACE_RESPONSE_GLASS,
+            ),
+            (
+                2.94,
+                4.95,
+                0.145,
+                0.28,
+                [0.09, 0.082, 0.068, 0.78],
+                WINDOW_SURFACE_RESPONSE_METAL,
+            ),
+            (
+                -1.8,
+                8.4,
+                0.142,
+                0.24,
+                [0.08, 0.09, 0.086, 0.72],
+                WINDOW_SURFACE_RESPONSE_GLASS,
+            ),
+        ] {
+            self.world_cylinder_between_with_surface_response(
+                [x - length * 0.5, y, z],
+                [x + length * 0.5, y + 0.06, z + 0.02],
+                0.028,
+                8,
+                color,
+                response,
+            );
+        }
+
+        let van_x = -3.72;
+        let van_y = 8.85;
+        for (offset_y, color) in [
+            (-0.96, [0.07, 0.072, 0.066, 0.86]),
+            (1.16, [0.062, 0.064, 0.058, 0.84]),
+        ] {
+            self.world_cylinder_between_with_surface_response(
+                [van_x - 0.54, van_y + offset_y, 0.48],
+                [van_x + 0.54, van_y + offset_y, 0.48],
+                0.045,
+                10,
+                color,
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+        }
+
+        for (wheel_x, wheel_y) in [
+            (van_x - 0.58, van_y - 0.68),
+            (van_x + 0.58, van_y - 0.68),
+            (van_x - 0.58, van_y + 0.66),
+            (van_x + 0.58, van_y + 0.66),
+        ] {
+            for tread in [-0.08_f32, 0.0, 0.08] {
+                self.world_cylinder_between_with_surface_response(
+                    [wheel_x - 0.13, wheel_y + tread, 0.305],
+                    [wheel_x + 0.13, wheel_y + tread, 0.31],
+                    0.006,
+                    5,
+                    [0.032, 0.031, 0.029, 0.82],
+                    WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+                );
+            }
         }
     }
 
@@ -10643,11 +10989,11 @@ impl WindowSceneGeometry {
         }
 
         for (index, center) in [
-            [-3.6, -7.4, 0.066],
-            [-1.2, -2.1, 0.066],
-            [2.6, 1.4, 0.066],
-            [3.8, 7.3, 0.066],
-            [-2.4, 11.2, 0.066],
+            [-3.6, -7.4, 0.021],
+            [-1.2, -2.1, 0.021],
+            [2.6, 1.4, 0.021],
+            [3.8, 7.3, 0.021],
+            [-2.4, 11.2, 0.021],
         ]
         .into_iter()
         .enumerate()
@@ -10655,12 +11001,20 @@ impl WindowSceneGeometry {
             let ripple = (phase + index as f32 * 0.19).fract();
             let outer = [0.16 + ripple * 0.38, 0.055 + ripple * 0.15];
             let inner = [(outer[0] - 0.055).max(0.02), (outer[1] - 0.025).max(0.01)];
-            self.world_ellipse_ring(
-                center,
+            self.world_flat_ellipse_with_surface_response(
+                [center[0], center[1], center[2] - 0.003],
+                [outer[0] * 0.92, outer[1] * 0.88],
+                12,
+                [0.05, 0.12, 0.16, 0.12],
+                WINDOW_SURFACE_RESPONSE_WET_ROAD,
+            );
+            self.world_ellipse_ring_with_surface_response(
+                [center[0], center[1], center[2]],
                 inner,
                 outer,
                 12,
                 [0.38, 0.56, 0.64, 0.12 * (1.0 - ripple * 0.65)],
+                WINDOW_SURFACE_RESPONSE_WET_ROAD,
             );
         }
 
@@ -15863,12 +16217,12 @@ mod fs {
                     in_view_depth
                 );
 
-                vec3 key_dir = normalize(vec3(-0.34, -0.42, 0.84));
+                vec3 key_dir = normalize(vec3(-0.28, -0.36, 0.89));
                 float direct = max(dot(normal_dir, key_dir), 0.0);
-                float back = max(dot(-normal_dir, key_dir), 0.0) * 0.22;
-                float diffuse = 0.34 + max(direct, back) * mix(0.82, 0.54, metallic);
-                vec3 sun_warmth = vec3(1.0, 0.83, 0.58) * direct * 0.16;
-                vec3 sky_fill = vec3(0.44, 0.53, 0.62) * (0.22 + max(normal_dir.z, 0.0) * 0.26);
+                float back = max(dot(-normal_dir, key_dir), 0.0) * 0.2;
+                float diffuse = 0.4 + max(direct, back) * mix(0.78, 0.5, metallic);
+                vec3 sun_warmth = vec3(1.0, 0.88, 0.68) * direct * 0.18;
+                vec3 sky_fill = vec3(0.52, 0.58, 0.64) * (0.28 + max(normal_dir.z, 0.0) * 0.32);
                 vec3 lit = surface_color * diffuse + surface_color * sky_fill + surface_color * sun_warmth;
 
                 float spec_power = mix(96.0, 18.0, roughness);
@@ -15881,18 +16235,18 @@ mod fs {
                     in_world_position,
                     normal_dir,
                     vec3(1.0, 3.0, 2.45),
-                    vec3(0.78, 0.22, 0.48),
+                    vec3(0.48, 0.18, 0.34),
                     8.5,
-                    0.14,
+                    0.07,
                     wetness
                 );
                 vec3 cyan = point_light(
                     in_world_position,
                     normal_dir,
                     vec3(-1.5, 0.5, 0.72),
-                    vec3(0.28, 0.58, 0.68),
+                    vec3(0.22, 0.42, 0.5),
                     5.2,
-                    0.1,
+                    0.06,
                     wetness
                 );
                 vec3 amber = point_light(
@@ -15901,14 +16255,14 @@ mod fs {
                     vec3(-4.95, -6.9, 1.45),
                     vec3(0.9, 0.55, 0.24),
                     4.2,
-                    0.14,
+                    0.12,
                     wetness
                 );
                 float upward_surface = smoothstep(0.38, 0.92, normal_dir.z);
                 float wet_ground = upward_surface * (1.0 - smoothstep(0.03, 0.22, abs(in_world_position.z)));
-                lit += magenta * (0.07 + wet_ground * 0.18);
-                lit += cyan * (0.05 + wet_ground * 0.14);
-                lit += amber * 0.16;
+                lit += magenta * (0.03 + wet_ground * 0.08);
+                lit += cyan * (0.025 + wet_ground * 0.06);
+                lit += amber * 0.13;
                 if (frame.dynamic_light_position_radius.w > 0.01 && frame.dynamic_light_color_intensity.w > 0.01) {
                     vec3 dynamic = point_light(
                         in_world_position,
@@ -16279,6 +16633,24 @@ mod tests {
         assert!(geometry.vertices.iter().any(|vertex| {
             vertex.color[0] == 0.82 && vertex.color[1] == 0.86 && vertex.color[2] == 0.84
         }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == [0.72, 0.68, 0.58, 0.18] && vertex.position[2] >= 0.98
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color[0] == 0.82
+                && vertex.color[1] == 0.88
+                && vertex.color[2] == 0.95
+                && vertex.color[3] >= 0.08
+        }));
+        assert!(
+            geometry
+                .vertices
+                .iter()
+                .any(|vertex| vertex.color[0] == 0.34
+                    && vertex.color[1] == 0.4
+                    && vertex.color[2] == 0.46
+                    && vertex.color[3] > 0.04)
+        );
         assert!(
             geometry
                 .vertices
@@ -17503,6 +17875,28 @@ mod tests {
                 && vertex.color[3] > 0.3
                 && vertex.surface_response == WINDOW_SURFACE_RESPONSE_EMISSIVE_NEON
         }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == [0.13, 0.12, 0.105, 0.98]
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_ROUGH_DIRT
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.position[2] <= 0.023
+                && vertex.color[0] <= 0.055
+                && vertex.color[1] >= 0.12
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_WET_ROAD
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == [0.92, 0.68, 0.36, 0.3]
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == [0.012, 0.012, 0.011, 0.84]
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_ROUGH_DIRT
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == [0.032, 0.031, 0.029, 0.82]
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_ROUGH_DIRT
+        }));
     }
 
     #[test]
@@ -17531,6 +17925,17 @@ mod tests {
                 && vertex.color[1] >= 0.6
                 && vertex.color[2] >= 0.68
                 && vertex.color[3] < 0.2
+        }));
+        assert!(first.vertices.iter().any(|vertex| {
+            vertex.position[2] <= 0.022
+                && vertex.color == [0.05, 0.12, 0.16, 0.12]
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_WET_ROAD
+        }));
+        assert!(first.vertices.iter().any(|vertex| {
+            vertex.position[2] <= 0.022
+                && vertex.color[0] == 0.38
+                && vertex.color[1] == 0.56
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_WET_ROAD
         }));
         assert!(
             first
