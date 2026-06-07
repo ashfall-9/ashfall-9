@@ -8,6 +8,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args
         .iter()
+        .any(|arg| arg == "--capture-v19-golden" || arg == "--capture-golden-v19")
+    {
+        let output_dir = output_dir_arg(&args)
+            .unwrap_or_else(|| std::path::PathBuf::from("target/ashfall_v19_golden"));
+        let paths =
+            ashfall::beauty_scene_v19_capture::capture_beauty_v19_golden_scenes(&output_dir)?;
+        println!(
+            "Captured {} V19 golden scene image(s) to {}",
+            paths.len(),
+            output_dir.display()
+        );
+        for path in paths {
+            println!("{}", path.display());
+        }
+        return Ok(());
+    }
+
+    if args
+        .iter()
         .any(|arg| arg == "--headless" || arg == "--demo-log")
     {
         return run_headless_demo(args.iter().any(|arg| {
@@ -16,6 +35,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     ashfall::windowed::run_windowed_game()
+}
+
+fn output_dir_arg(args: &[String]) -> Option<std::path::PathBuf> {
+    args.iter()
+        .position(|arg| arg == "--output-dir")
+        .and_then(|index| args.get(index + 1))
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            args.iter().find_map(|arg| {
+                arg.strip_prefix("--output-dir=")
+                    .map(std::path::PathBuf::from)
+            })
+        })
 }
 
 fn run_headless_demo(print_tools_capture: bool) -> Result<(), Box<dyn std::error::Error>> {

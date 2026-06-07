@@ -5,6 +5,7 @@ pub mod beauty_contract;
 pub mod beauty_v16;
 pub mod beauty_v17;
 pub mod beauty_v18;
+pub mod beauty_v19;
 pub mod windowed;
 
 use ashfall_core::assets::AssetPriority;
