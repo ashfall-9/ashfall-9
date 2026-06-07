@@ -3,8 +3,9 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use ashfall_rendering::beauty_v20::{
-    BeautyCellPackageV20, BeautyMaterialIdV20, BeautySurfaceIdV20, BoundsV20,
-    NaturalEnvironmentV20, SurfaceTextureRecipeV20, Vec3V20, WorldBiomeV20, sample_material_v20,
+    BeautyCellPackageV20, BeautyMaterialIdV20, BeautySurfaceIdV20, BoundsV20, HumanPoseStateV20,
+    HumanProxyV20, NaturalEnvironmentV20, SurfaceTextureRecipeV20, Vec3V20, WorldBiomeV20,
+    sample_material_v20,
 };
 
 use crate::beauty_scene_v20_bridge::{BeautySceneBuildContextV20, build_beauty_scene_v20};
@@ -404,37 +405,477 @@ fn render_v20_golden_cell(
     }
 
     for human in &cell.humans {
-        let (x, y) = image.project(cell.bounds, human.world_position);
-        let height = human.proportions.height_meters * 8.0;
-        let skin = material_color(
-            recipes,
-            human.materials.skin_surface,
-            human.materials.skin_material,
-            [human.world_position.x, human.world_position.y],
-            seed ^ human.materials.skin_surface.0,
-            [163, 119, 88],
-        );
-        let cloth = material_color(
-            recipes,
-            human.materials.clothing_surface,
-            human.materials.clothing_material,
-            [human.world_position.x, human.world_position.y],
-            seed ^ human.materials.clothing_surface.0,
-            [49, 67, 76],
-        );
-        image.fill_ellipse(x, y - height as i32, 4.0, 4.8, skin, 0.95);
-        image.fill_ellipse(x, y - height as i32 - 3, 4.2, 2.2, [31, 24, 19], 0.82);
-        image.fill_irregular_blob(
-            [x, y - height as i32 / 2],
-            [4.3, height * 0.46],
-            Brush::new(cloth, 0.90),
-            seed ^ human.entity_id,
-        );
-        image.line(x - 3, y - 6, x - 10, y + 7, 1.5, Brush::new(cloth, 0.88));
-        image.line(x + 3, y - 6, x + 9, y + 7, 1.5, Brush::new(cloth, 0.88));
+        draw_capture_human(image, cell.bounds, recipes, human, seed);
     }
 
     draw_texture_grain(image, seed ^ cell.cell_id);
+}
+
+fn draw_capture_human(
+    image: &mut RgbImage,
+    bounds: BoundsV20,
+    recipes: &[SurfaceTextureRecipeV20],
+    human: &HumanProxyV20,
+    seed: u64,
+) {
+    let (x, foot_y) = image.project(bounds, human.world_position);
+    let pose_seed = seed ^ human.entity_id ^ human.world_position.x.to_bits() as u64;
+    let phase = if stable_unit(pose_seed, 1) < 0.5 {
+        -1.0
+    } else {
+        1.0
+    };
+    let (stride, arm_swing, crouch, forward_lean) = match human.pose {
+        HumanPoseStateV20::Idle => (0.10, 0.14, 0.0, 0.0),
+        HumanPoseStateV20::Walking => (0.52, 0.56, 0.02, 0.02),
+        HumanPoseStateV20::Running => (0.86, 0.82, 0.03, 0.07),
+        HumanPoseStateV20::Crouched => (0.26, 0.34, 0.22, 0.05),
+        HumanPoseStateV20::Sitting => (0.34, 0.18, 0.30, -0.01),
+    };
+    let height = (human.proportions.height_meters * 15.0 * (1.0 - crouch * 0.38)).clamp(18.0, 32.0);
+    let scale = height / human.proportions.height_meters.max(1.0);
+    let facing_side = human.facing_yaw_radians.sin();
+    let frontness = human.facing_yaw_radians.cos().abs();
+    let width_factor = lerp(0.72, 1.08, frontness);
+    let shoulder_half =
+        (human.proportions.shoulder_width_meters * scale * 0.52 * width_factor).clamp(3.8, 7.6);
+    let pelvis_half =
+        (human.proportions.pelvis_width_meters * scale * 0.50 * width_factor).clamp(2.8, 5.6);
+    let head_rx =
+        (human.proportions.head_radius_meters * scale * 1.55 * width_factor).clamp(2.5, 4.5);
+    let head_ry = (head_rx * 1.22).clamp(3.0, 5.3);
+    let side_bias = facing_side * 1.7;
+    let lean_px = forward_lean * height * phase + side_bias * 0.35;
+
+    let skin = material_color(
+        recipes,
+        human.materials.skin_surface,
+        human.materials.skin_material,
+        [human.world_position.x, human.world_position.y],
+        seed ^ human.materials.skin_surface.0,
+        [176, 126, 94],
+    );
+    let cloth = material_color(
+        recipes,
+        human.materials.clothing_surface,
+        human.materials.clothing_material,
+        [human.world_position.x, human.world_position.y],
+        seed ^ human.materials.clothing_surface.0,
+        [46, 66, 82],
+    );
+    let hair = material_color(
+        recipes,
+        human.materials.hair_surface,
+        human.materials.hair_material,
+        [human.world_position.x, human.world_position.y],
+        seed ^ human.materials.hair_surface.0,
+        [36, 27, 21],
+    );
+    let shoe = material_color(
+        recipes,
+        human.materials.shoe_surface,
+        human.materials.shoe_material,
+        [human.world_position.x, human.world_position.y],
+        seed ^ human.materials.shoe_surface.0,
+        [30, 30, 28],
+    );
+
+    let ankle_y = foot_y as f32 - 1.0;
+    let hip_y = foot_y as f32 - height * 0.45;
+    let knee_y = foot_y as f32 - height * 0.22;
+    let waist_y = foot_y as f32 - height * 0.53;
+    let chest_y = foot_y as f32 - height * 0.66;
+    let shoulder_y = foot_y as f32 - height * 0.73;
+    let neck_y = foot_y as f32 - height * 0.80;
+    let head_y = foot_y as f32 - height * 0.90;
+    let torso_x = x as f32 + lean_px;
+    let stride_px = height * 0.18 * stride;
+
+    image.fill_ellipse(
+        x,
+        foot_y + 1,
+        shoulder_half + stride_px * 0.70 + 4.0,
+        2.4,
+        [18, 17, 15],
+        0.22,
+    );
+
+    if human.has_legs {
+        let left_hip = (torso_x - pelvis_half, hip_y);
+        let right_hip = (torso_x + pelvis_half, hip_y + 0.4);
+        let left_knee = (
+            torso_x - pelvis_half * 0.55 - stride_px * phase * 0.40 + side_bias,
+            knee_y,
+        );
+        let right_knee = (
+            torso_x + pelvis_half * 0.55 + stride_px * phase * 0.36 + side_bias,
+            knee_y + stride * 1.0,
+        );
+        let left_foot = (
+            x as f32 - pelvis_half - stride_px * phase + side_bias,
+            ankle_y,
+        );
+        let right_foot = (
+            x as f32 + pelvis_half + stride_px * phase + side_bias,
+            ankle_y + stride * 0.6,
+        );
+        let trouser_shadow = darken(cloth, 0.58);
+        draw_capture_limb(
+            image,
+            left_hip,
+            left_knee,
+            1.85,
+            darken(cloth, 0.82),
+            trouser_shadow,
+            pose_seed ^ 0x101,
+        );
+        draw_capture_limb(
+            image,
+            left_knee,
+            left_foot,
+            1.65,
+            darken(cloth, 0.78),
+            trouser_shadow,
+            pose_seed ^ 0x102,
+        );
+        draw_capture_limb(
+            image,
+            right_hip,
+            right_knee,
+            1.90,
+            cloth,
+            trouser_shadow,
+            pose_seed ^ 0x103,
+        );
+        draw_capture_limb(
+            image,
+            right_knee,
+            right_foot,
+            1.70,
+            darken(cloth, 0.90),
+            trouser_shadow,
+            pose_seed ^ 0x104,
+        );
+        if human.has_feet {
+            let foot_rx = (human.proportions.foot_length_meters * scale * 0.72).clamp(2.5, 4.6);
+            image.fill_ellipse(
+                left_foot.0 as i32,
+                left_foot.1 as i32 + 1,
+                foot_rx,
+                1.35,
+                shoe,
+                0.92,
+            );
+            image.fill_ellipse(
+                right_foot.0 as i32,
+                right_foot.1 as i32 + 1,
+                foot_rx,
+                1.35,
+                brighten(shoe, 1.12),
+                0.92,
+            );
+            image.line(
+                left_foot.0 as i32 - 2,
+                left_foot.1 as i32,
+                left_foot.0 as i32 + 2,
+                left_foot.1 as i32,
+                0.55,
+                Brush::new(brighten(shoe, 1.55), 0.22),
+            );
+        }
+    }
+
+    if human.has_pelvis {
+        image.fill_ellipse(
+            torso_x as i32,
+            hip_y as i32,
+            pelvis_half + 1.2,
+            3.0,
+            darken(cloth, 0.76),
+            0.90,
+        );
+        image.line(
+            (torso_x - pelvis_half) as i32,
+            hip_y as i32 - 1,
+            (torso_x + pelvis_half) as i32,
+            hip_y as i32 - 1,
+            0.65,
+            Brush::new(brighten(cloth, 1.28), 0.24),
+        );
+    }
+
+    if human.has_torso {
+        let torso_points = [
+            (
+                (torso_x - shoulder_half) as i32,
+                (shoulder_y + stable_unit(pose_seed, 6)) as i32,
+            ),
+            (
+                (torso_x + shoulder_half) as i32,
+                (shoulder_y + stable_unit(pose_seed, 7)) as i32,
+            ),
+            ((torso_x + pelvis_half * 0.78) as i32, waist_y as i32),
+            ((torso_x + pelvis_half * 0.58) as i32, hip_y as i32 + 1),
+            ((torso_x - pelvis_half * 0.58) as i32, hip_y as i32 + 1),
+            ((torso_x - pelvis_half * 0.78) as i32, waist_y as i32),
+        ];
+        image.fill_polygon(&torso_points, cloth, 0.92);
+        image.fill_irregular_blob(
+            [torso_x as i32, ((chest_y + waist_y) * 0.5) as i32],
+            [shoulder_half * 0.72, height * 0.13],
+            Brush::new(brighten(cloth, 1.08), 0.34),
+            pose_seed ^ 0x501,
+        );
+        image.line(
+            (torso_x - shoulder_half * 0.55) as i32,
+            (chest_y - 1.0) as i32,
+            (torso_x + shoulder_half * 0.35) as i32,
+            (waist_y + 1.0) as i32,
+            0.55,
+            Brush::new(darken(cloth, 0.55), 0.34),
+        );
+        image.line(
+            (torso_x + shoulder_half * 0.42) as i32,
+            chest_y as i32,
+            (torso_x + pelvis_half * 0.24) as i32,
+            hip_y as i32,
+            0.55,
+            Brush::new(brighten(cloth, 1.32), 0.22),
+        );
+        for fold in 0..3 {
+            let fold_seed = pose_seed ^ (fold as u64 * 0x611);
+            let fx = torso_x
+                + (stable_unit(fold_seed, 1) - 0.5) * shoulder_half * 1.25
+                + side_bias * 0.2;
+            image.line(
+                fx as i32,
+                (chest_y + 1.0) as i32,
+                (fx + stable_unit(fold_seed, 2) * 2.0 - 1.0) as i32,
+                (waist_y + 1.0) as i32,
+                0.45,
+                Brush::new(darken(cloth, 0.62), 0.22),
+            );
+        }
+    }
+
+    if human.has_arms {
+        let left_shoulder = (torso_x - shoulder_half, shoulder_y + 1.0);
+        let right_shoulder = (torso_x + shoulder_half, shoulder_y + 1.0);
+        let left_elbow = (
+            torso_x - shoulder_half - 2.2 - stride_px * phase * arm_swing * 0.48,
+            waist_y - height * 0.04,
+        );
+        let right_elbow = (
+            torso_x + shoulder_half + 2.2 + stride_px * phase * arm_swing * 0.42,
+            waist_y - height * 0.03,
+        );
+        let left_hand = (
+            left_elbow.0 - 2.2 - stride_px * phase * arm_swing * 0.34,
+            hip_y + height * 0.10,
+        );
+        let right_hand = (
+            right_elbow.0 + 2.0 + stride_px * phase * arm_swing * 0.30,
+            hip_y + height * 0.08,
+        );
+        draw_capture_limb(
+            image,
+            left_shoulder,
+            left_elbow,
+            1.35,
+            darken(cloth, 0.80),
+            darken(cloth, 0.52),
+            pose_seed ^ 0x201,
+        );
+        draw_capture_limb(
+            image,
+            right_shoulder,
+            right_elbow,
+            1.35,
+            cloth,
+            darken(cloth, 0.56),
+            pose_seed ^ 0x202,
+        );
+        draw_capture_limb(
+            image,
+            left_elbow,
+            left_hand,
+            1.05,
+            brighten(cloth, 0.94),
+            darken(cloth, 0.58),
+            pose_seed ^ 0x203,
+        );
+        draw_capture_limb(
+            image,
+            right_elbow,
+            right_hand,
+            1.05,
+            brighten(cloth, 1.04),
+            darken(cloth, 0.62),
+            pose_seed ^ 0x204,
+        );
+        if human.has_hands {
+            image.fill_ellipse(
+                left_hand.0 as i32,
+                left_hand.1 as i32,
+                1.45,
+                1.75,
+                darken(skin, 0.86),
+                0.88,
+            );
+            image.fill_ellipse(
+                right_hand.0 as i32,
+                right_hand.1 as i32,
+                1.45,
+                1.75,
+                skin,
+                0.88,
+            );
+        }
+    }
+
+    if human.has_head {
+        image.fill_rect_centered(
+            torso_x as i32,
+            neck_y as i32,
+            2.1,
+            3.4,
+            darken(skin, 0.86),
+            0.86,
+        );
+        image.fill_ellipse(
+            (torso_x + side_bias * 0.18) as i32,
+            head_y as i32,
+            head_rx,
+            head_ry,
+            skin,
+            0.94,
+        );
+        image.fill_ellipse(
+            (torso_x - head_rx * 0.92 + side_bias * 0.18) as i32,
+            head_y as i32,
+            0.85,
+            1.25,
+            darken(skin, 0.82),
+            0.68,
+        );
+        image.fill_ellipse(
+            (torso_x + head_rx * 0.92 + side_bias * 0.18) as i32,
+            head_y as i32,
+            0.85,
+            1.25,
+            darken(skin, 0.88),
+            0.62,
+        );
+        image.fill_ellipse(
+            (torso_x - head_rx * 0.18) as i32,
+            (head_y - head_ry * 0.12) as i32,
+            head_rx * 0.34,
+            head_ry * 0.20,
+            brighten(skin, 1.17),
+            0.24,
+        );
+        image.fill_rect_centered(
+            (torso_x + side_bias * 0.30) as i32,
+            (head_y + head_ry * 0.18) as i32,
+            1.0,
+            1.6,
+            darken(skin, 0.74),
+            0.24,
+        );
+        image.line(
+            (torso_x - head_rx * 0.38) as i32,
+            (head_y + head_ry * 0.46) as i32,
+            (torso_x + head_rx * 0.36) as i32,
+            (head_y + head_ry * 0.43) as i32,
+            0.45,
+            Brush::new([93, 48, 44], 0.34),
+        );
+        image.fill_ellipse(
+            (torso_x - head_rx * 0.38) as i32,
+            (head_y - head_ry * 0.10) as i32,
+            0.55,
+            0.45,
+            [21, 24, 25],
+            0.76,
+        );
+        image.fill_ellipse(
+            (torso_x + head_rx * 0.34) as i32,
+            (head_y - head_ry * 0.10) as i32,
+            0.55,
+            0.45,
+            [21, 24, 25],
+            0.72,
+        );
+    }
+
+    if human.has_hair_or_hat_silhouette {
+        image.fill_ellipse(
+            (torso_x + side_bias * 0.22) as i32,
+            (head_y - head_ry * 0.78) as i32,
+            head_rx * 1.10,
+            head_ry * 0.50,
+            hair,
+            0.90,
+        );
+        image.fill_ellipse(
+            (torso_x - head_rx * 0.65 + side_bias * 0.16) as i32,
+            (head_y - head_ry * 0.10) as i32,
+            1.2,
+            head_ry * 0.74,
+            darken(hair, 0.82),
+            0.72,
+        );
+        image.line(
+            (torso_x - head_rx * 0.95) as i32,
+            (head_y - head_ry * 0.42) as i32,
+            (torso_x + head_rx * 0.70) as i32,
+            (head_y - head_ry * 0.56) as i32,
+            0.55,
+            Brush::new(brighten(hair, 1.30), 0.20),
+        );
+    }
+}
+
+fn draw_capture_limb(
+    image: &mut RgbImage,
+    start: (f32, f32),
+    end: (f32, f32),
+    radius: f32,
+    color: [u8; 3],
+    shadow: [u8; 3],
+    seed: u64,
+) {
+    let midpoint = ((start.0 + end.0) * 0.5, (start.1 + end.1) * 0.5);
+    image.line(
+        start.0 as i32,
+        start.1 as i32,
+        end.0 as i32,
+        end.1 as i32,
+        radius,
+        Brush::new(color, 0.86),
+    );
+    image.fill_irregular_blob(
+        [midpoint.0 as i32, midpoint.1 as i32],
+        [radius * 1.45, radius * 1.08],
+        Brush::new(brighten(color, 1.08), 0.20),
+        seed,
+    );
+    image.line(
+        (start.0 - 0.6) as i32,
+        (start.1 - 0.3) as i32,
+        (end.0 - 0.4) as i32,
+        (end.1 - 0.2) as i32,
+        (radius * 0.34).max(0.45),
+        Brush::new(brighten(color, 1.36), 0.20),
+    );
+    image.line(
+        (start.0 + 0.8) as i32,
+        (start.1 + 0.4) as i32,
+        (end.0 + 0.6) as i32,
+        (end.1 + 0.4) as i32,
+        (radius * 0.30).max(0.42),
+        Brush::new(shadow, 0.18),
+    );
 }
 
 fn draw_sky(
@@ -922,5 +1363,65 @@ impl RgbImage {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    #[test]
+    fn capture_human_painter_builds_anatomical_sprite_instead_of_stick_figure() {
+        let mut image = RgbImage::new(96, 96);
+        let bounds = BoundsV20 {
+            min: Vec3V20::new(-1.0, -1.0, 0.0),
+            max: Vec3V20::new(1.0, 1.0, 0.0),
+        };
+        let mut human = HumanProxyV20::city_pedestrian(42, Vec3V20::new(0.0, 0.0, 0.0));
+        human.pose = HumanPoseStateV20::Walking;
+        human.facing_yaw_radians = 0.35;
+
+        draw_capture_human(&mut image, bounds, &[], &human, 0xC0FFEE);
+
+        let mut colored_pixels = 0;
+        let mut unique_colors = BTreeSet::new();
+        let mut min_x = image.width as i32;
+        let mut min_y = image.height as i32;
+        let mut max_x = 0_i32;
+        let mut max_y = 0_i32;
+
+        for y in 0..image.height {
+            for x in 0..image.width {
+                let pixel = image.pixels[(y * image.width + x) as usize];
+                if pixel == [0, 0, 0] {
+                    continue;
+                }
+                colored_pixels += 1;
+                unique_colors.insert(pixel);
+                min_x = min_x.min(x as i32);
+                min_y = min_y.min(y as i32);
+                max_x = max_x.max(x as i32);
+                max_y = max_y.max(y as i32);
+            }
+        }
+
+        assert!(
+            colored_pixels > 230,
+            "capture human should have filled anatomical mass, got {colored_pixels} colored pixels"
+        );
+        assert!(
+            max_x - min_x >= 18,
+            "capture human should include shoulders, arms, hands, and feet"
+        );
+        assert!(
+            max_y - min_y >= 25,
+            "capture human should include full head-to-foot height"
+        );
+        assert!(
+            unique_colors.len() >= 18,
+            "capture human should layer skin, clothes, hair, shoes, folds, and face detail"
+        );
     }
 }

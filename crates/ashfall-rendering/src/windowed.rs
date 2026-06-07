@@ -11680,21 +11680,350 @@ impl WindowSceneGeometry {
             crouch: instance.crouch_weight_0_to_1.clamp(0.0, 1.0),
         };
 
-        for body_part in &proxy.body_parts {
-            self.add_humanoid_body_part(
-                [x, y, z],
-                body_part,
-                instance.color,
-                instance.surface_state.as_ref(),
-                proxy.detail_profile.silhouette_segments,
-                proxy.detail_profile.limb_volume_layer_count,
-                orientation,
-                pose,
-            );
+        if proxy.body_parts.is_empty() {
+            return;
+        }
+
+        self.add_humanoid_cohesive_silhouette_shell(
+            [x, y, z],
+            &instance,
+            &proxy,
+            orientation,
+            pose,
+        );
+
+        if humanoid_allows_near_detail(&instance, &proxy)
+            && proxy.quality_tier == QualityTier::ReferenceOfflineValidation
+        {
+            for body_part in &proxy.body_parts {
+                self.add_humanoid_body_part(
+                    [x, y, z],
+                    body_part,
+                    instance.color,
+                    instance.surface_state.as_ref(),
+                    proxy.detail_profile.silhouette_segments,
+                    proxy.detail_profile.limb_volume_layer_count,
+                    orientation,
+                    pose,
+                );
+            }
         }
 
         self.add_humanoid_surface_details(&instance, &proxy);
         self.add_humanoid_face_features(instance, &proxy);
+    }
+
+    fn add_humanoid_cohesive_silhouette_shell(
+        &mut self,
+        origin: [f32; 3],
+        instance: &WindowHumanoidProxyInstance<'_>,
+        proxy: &HumanProxyGeometry,
+        orientation: HumanoidOrientationBasis,
+        pose: HumanoidPoseWeights,
+    ) {
+        let height = proxy.height_meters;
+        let color = instance.color;
+        let surface_state = instance.surface_state.as_ref();
+        let skin_response = humanoid_skin_surface_response(surface_state);
+        let clothing_response = humanoid_clothing_surface_response(surface_state);
+        let hair_response = humanoid_hair_surface_response(surface_state);
+        let skin = humanoid_default_skin_color(color);
+        let skin_warm = humanoid_skin_warm_highlight_color(color, surface_state);
+        let skin_shadow = humanoid_skin_soft_shadow_color(color, surface_state);
+        let cloth = humanoid_clothing_color(color);
+        let cloth_shadow = humanoid_clothing_crease_color(color, surface_state);
+        let cloth_highlight = window_scale_color(cloth, 1.18);
+        let boot = humanoid_boot_color(color);
+        let hair = humanoid_hair_color(color, surface_state);
+        let hair_shadow = humanoid_hairline_shadow_color(color, surface_state);
+        let axes = [orientation.right, orientation.forward, orientation.up];
+        let shell_segments = (proxy.detail_profile.silhouette_segments as usize).clamp(12, 24);
+        let shell_rings = (shell_segments / 2).clamp(5, 10);
+        let limb_segments = (shell_segments - 2).clamp(8, 16);
+        let shoulder_half = (height * 0.135).clamp(0.19, 0.30);
+        let hip_half = (height * 0.105).clamp(0.15, 0.24);
+        let body_depth = (height * 0.075).clamp(0.10, 0.16);
+        let head_radius = (height * 0.077).clamp(0.12, 0.18);
+        let locomotion = pose.locomotion.clamp(0.0, 1.0);
+        let crouch = pose.crouch.clamp(0.0, 1.0);
+        let body_drop = height * crouch * 0.055;
+        let body_forward = height * crouch * 0.030;
+        let stride = height * locomotion * 0.060;
+        let arm_swing = height * locomotion * 0.040;
+
+        self.world_flat_ellipse_with_surface_response(
+            [origin[0], origin[1], origin[2] + 0.006],
+            [shoulder_half * 1.22 + stride.abs() * 1.2, body_depth * 1.42],
+            shell_segments,
+            [0.012, 0.010, 0.009, 0.24],
+            WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+        );
+
+        let pelvis_center = humanoid_oriented_point(
+            origin,
+            orientation,
+            [0.0, body_forward * 0.38, height * 0.455 - body_drop],
+        );
+        let abdomen_center = humanoid_oriented_point(
+            origin,
+            orientation,
+            [0.0, body_forward * 0.50, height * 0.555 - body_drop],
+        );
+        let chest_center = humanoid_oriented_point(
+            origin,
+            orientation,
+            [0.0, body_forward * 0.42, height * 0.668 - body_drop],
+        );
+        let neck_center = humanoid_oriented_point(
+            origin,
+            orientation,
+            [0.0, body_forward * 0.24, height * 0.785 - body_drop * 0.45],
+        );
+        let head_center = humanoid_oriented_point(
+            origin,
+            orientation,
+            [0.0, body_forward * 0.14, height * 0.885 - body_drop * 0.24],
+        );
+
+        self.world_oriented_ellipsoid_with_surface_response(
+            pelvis_center,
+            axes,
+            [hip_half * 1.08, body_depth * 0.98, height * 0.062],
+            shell_rings,
+            shell_segments,
+            window_scale_color(cloth, 0.86),
+            clothing_response,
+        );
+        self.world_oriented_ellipsoid_with_surface_response(
+            abdomen_center,
+            axes,
+            [hip_half * 0.98, body_depth * 0.92, height * 0.090],
+            shell_rings,
+            shell_segments,
+            cloth,
+            clothing_response,
+        );
+        self.world_oriented_ellipsoid_with_surface_response(
+            chest_center,
+            axes,
+            [shoulder_half * 1.02, body_depth, height * 0.092],
+            shell_rings,
+            shell_segments,
+            cloth_highlight,
+            clothing_response,
+        );
+        self.world_oriented_ellipsoid_with_surface_response(
+            add3(chest_center, scale3(orientation.forward, body_depth * 0.46)),
+            axes,
+            [shoulder_half * 0.78, body_depth * 0.24, height * 0.070],
+            5,
+            shell_segments.min(16),
+            window_scale_color(cloth_highlight, 0.86),
+            clothing_response,
+        );
+        self.world_cylinder_between_with_surface_response(
+            add3(neck_center, scale3(orientation.up, -height * 0.034)),
+            add3(neck_center, scale3(orientation.up, height * 0.034)),
+            head_radius * 0.34,
+            limb_segments,
+            skin_shadow,
+            skin_response,
+        );
+        self.world_oriented_ellipsoid_with_surface_response(
+            head_center,
+            axes,
+            [head_radius * 0.88, head_radius * 0.72, head_radius * 1.18],
+            shell_rings,
+            shell_segments,
+            skin,
+            skin_response,
+        );
+        self.world_oriented_ellipsoid_with_surface_response(
+            add3(
+                add3(head_center, scale3(orientation.up, head_radius * 0.52)),
+                scale3(orientation.forward, -head_radius * 0.05),
+            ),
+            axes,
+            [head_radius * 0.95, head_radius * 0.76, head_radius * 0.48],
+            5,
+            shell_segments.min(16),
+            hair,
+            hair_response,
+        );
+        self.world_oriented_ellipsoid_with_surface_response(
+            add3(
+                add3(head_center, scale3(orientation.up, head_radius * 0.06)),
+                scale3(orientation.forward, -head_radius * 0.34),
+            ),
+            axes,
+            [head_radius * 0.86, head_radius * 0.16, head_radius * 0.68],
+            4,
+            10,
+            hair_shadow,
+            hair_response,
+        );
+
+        for side in [-1.0_f32, 1.0] {
+            let shoulder = humanoid_oriented_point(
+                origin,
+                orientation,
+                [
+                    side * shoulder_half * 1.02,
+                    body_forward * 0.35 - side * arm_swing * 0.22,
+                    height * 0.704 - body_drop * 0.88,
+                ],
+            );
+            let elbow = humanoid_oriented_point(
+                origin,
+                orientation,
+                [
+                    side * (shoulder_half * 1.13 + height * 0.018),
+                    body_forward + side * arm_swing,
+                    height * 0.540 - body_drop * 0.70,
+                ],
+            );
+            let wrist = humanoid_oriented_point(
+                origin,
+                orientation,
+                [
+                    side * (hip_half * 0.92 + height * 0.030),
+                    body_forward + side * arm_swing * 0.55,
+                    height * 0.365 - body_drop * 0.42,
+                ],
+            );
+            self.world_oriented_ellipsoid_with_surface_response(
+                shoulder,
+                axes,
+                [height * 0.040, body_depth * 0.58, height * 0.047],
+                5,
+                shell_segments.min(14),
+                cloth_highlight,
+                clothing_response,
+            );
+            self.world_cylinder_between_with_surface_response(
+                shoulder,
+                elbow,
+                height * 0.026,
+                limb_segments,
+                cloth,
+                clothing_response,
+            );
+            self.world_cylinder_between_with_surface_response(
+                elbow,
+                wrist,
+                height * 0.021,
+                limb_segments,
+                window_scale_color(cloth, 0.92),
+                clothing_response,
+            );
+            self.world_oriented_ellipsoid_with_surface_response(
+                wrist,
+                axes,
+                [height * 0.020, height * 0.015, height * 0.028],
+                4,
+                10,
+                if side < 0.0 {
+                    window_scale_color(skin, 0.92)
+                } else {
+                    skin
+                },
+                skin_response,
+            );
+
+            let hip = humanoid_oriented_point(
+                origin,
+                orientation,
+                [
+                    side * hip_half * 0.56,
+                    body_forward * 0.38 + side * stride * 0.18,
+                    height * 0.430 - body_drop,
+                ],
+            );
+            let knee = humanoid_oriented_point(
+                origin,
+                orientation,
+                [
+                    side * hip_half * 0.42,
+                    body_forward + side * stride + crouch * height * 0.040,
+                    height * 0.238 - body_drop * 0.54,
+                ],
+            );
+            let ankle = humanoid_oriented_point(
+                origin,
+                orientation,
+                [
+                    side * hip_half * 0.50,
+                    -side * stride * 0.62 + crouch * height * 0.016,
+                    height * 0.060,
+                ],
+            );
+            self.world_cylinder_between_with_surface_response(
+                hip,
+                knee,
+                height * 0.034,
+                limb_segments,
+                window_scale_color(cloth, if side < 0.0 { 0.86 } else { 1.02 }),
+                clothing_response,
+            );
+            self.world_cylinder_between_with_surface_response(
+                knee,
+                ankle,
+                height * 0.028,
+                limb_segments,
+                window_scale_color(cloth, if side < 0.0 { 0.78 } else { 0.92 }),
+                clothing_response,
+            );
+            self.world_oriented_ellipsoid_with_surface_response(
+                knee,
+                axes,
+                [height * 0.038, body_depth * 0.40, height * 0.030],
+                4,
+                10,
+                cloth_shadow,
+                clothing_response,
+            );
+            self.world_oriented_ellipsoid_with_surface_response(
+                add3(ankle, scale3(orientation.forward, height * 0.026)),
+                axes,
+                [height * 0.046, height * 0.072, height * 0.022],
+                4,
+                12,
+                boot,
+                clothing_response,
+            );
+        }
+
+        self.world_oriented_rect_with_surface_response(
+            add3(chest_center, scale3(orientation.forward, body_depth * 0.86)),
+            orientation.right,
+            orientation.up,
+            [shoulder_half * 0.42, height * 0.006],
+            window_mix_color(cloth_highlight, [1.0, 1.0, 1.0, cloth_highlight[3]], 0.08),
+            clothing_response,
+        );
+        self.world_oriented_rect_with_surface_response(
+            add3(
+                abdomen_center,
+                scale3(orientation.forward, body_depth * 0.84),
+            ),
+            orientation.right,
+            orientation.up,
+            [hip_half * 0.34, height * 0.004],
+            cloth_shadow,
+            clothing_response,
+        );
+        self.world_oriented_ellipsoid_with_surface_response(
+            add3(
+                add3(head_center, scale3(orientation.forward, head_radius * 0.64)),
+                scale3(orientation.up, -head_radius * 0.02),
+            ),
+            axes,
+            [head_radius * 0.20, head_radius * 0.045, head_radius * 0.16],
+            4,
+            8,
+            skin_warm,
+            skin_response,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -12173,6 +12502,7 @@ impl WindowSceneGeometry {
         let boot_color = humanoid_boot_color(instance.color);
         let front_body = scale3(forward, body_front_offset);
         let front_face = scale3(forward, face_front_offset);
+        let mid_detail = humanoid_allows_mid_detail(instance, proxy);
 
         let chest_center = add3([x, y, z + height * 0.615], front_body);
         for lateral in [-height * 0.046, height * 0.046] {
@@ -12226,7 +12556,7 @@ impl WindowSceneGeometry {
             );
         }
 
-        if proxy.quality_tier >= QualityTier::HeroHighFidelityRuntime {
+        if mid_detail && proxy.quality_tier >= QualityTier::HeroHighFidelityRuntime {
             self.world_oriented_rect_with_surface_response(
                 add3(
                     [x, y, z + height * 0.875],
@@ -12412,14 +12742,23 @@ impl WindowSceneGeometry {
         }
 
         let seed = humanoid_detail_seed(instance);
+        if !humanoid_allows_mid_detail(instance, proxy) {
+            return;
+        }
+
+        self.add_humanoid_clothing_seams_and_motion(instance, proxy, basis, seed);
+        if !humanoid_allows_near_detail(instance, proxy) {
+            return;
+        }
+
+        self.add_humanoid_version4_anatomy_and_fabric_detail(instance, proxy, basis, seed);
         self.add_humanoid_skin_microdetail(instance, proxy, basis, seed);
         self.add_humanoid_eye_layer_details(instance, proxy, basis);
         self.add_humanoid_hair_strand_cards(instance, proxy, basis, seed);
-        self.add_humanoid_clothing_seams_and_motion(instance, proxy, basis, seed);
-        self.add_humanoid_version4_anatomy_and_fabric_detail(instance, proxy, basis, seed);
         self.add_humanoid_version5_photoreal_proxy_layers(instance, proxy, basis, seed);
         self.add_humanoid_version6_silhouette_refinement(instance, proxy, basis, seed);
         self.add_humanoid_version7_articulated_closeup_detail(instance, proxy, basis, seed);
+        self.add_humanoid_version8_soft_tissue_form_detail(instance, proxy, basis, seed);
 
         if humanoid_has_visible_cybernetic_detail(instance, proxy) {
             self.add_humanoid_cybernetic_detail(instance, proxy, basis, seed);
@@ -14074,6 +14413,238 @@ impl WindowSceneGeometry {
         }
     }
 
+    fn add_humanoid_version8_soft_tissue_form_detail(
+        &mut self,
+        instance: &WindowHumanoidProxyInstance<'_>,
+        proxy: &HumanProxyGeometry,
+        basis: HumanoidDetailBasis,
+        seed: u64,
+    ) {
+        if !proxy.detail_profile.supports_photoreal_near_proxy() {
+            return;
+        }
+
+        let [x, y] = instance.center_meters;
+        let z = instance.z_meters;
+        let height = proxy.height_meters;
+        let surface = instance.surface_state.as_ref();
+        let skin_response = humanoid_skin_surface_response(surface);
+        let cloth_response = humanoid_clothing_surface_response(surface);
+        let skin_subsurface = humanoid_soft_tissue_subsurface_color(instance.color, surface);
+        let skin_blush = humanoid_soft_tissue_blush_color(instance.color, surface);
+        let skin_shadow = humanoid_skin_soft_shadow_color(instance.color, surface);
+        let skin_cool = humanoid_skin_cool_shadow_color(instance.color, surface);
+        let cloth_pressure = humanoid_clothing_pressure_color(instance.color, surface);
+        let cloth_crease = humanoid_clothing_crease_color(instance.color, surface);
+        let axes = [basis.right, basis.forward, basis.up];
+        let form_count = proxy.detail_profile.soft_tissue_form_count.max(8) as usize;
+        let locomotion = instance.locomotion_weight_0_to_1.clamp(0.0, 1.0);
+        let crouch = instance.crouch_weight_0_to_1.clamp(0.0, 1.0);
+        let breath = height * (0.004 + window_stable_unit(seed, 34_101) * 0.004);
+
+        for side in [-1.0_f32, 1.0] {
+            let cheek = add3(
+                [x, y, z + height * 0.862],
+                add3(
+                    add3(basis.front_face, scale3(basis.right, side * height * 0.060)),
+                    scale3(basis.forward, height * 0.014),
+                ),
+            );
+            self.world_oriented_ellipsoid_with_surface_response(
+                cheek,
+                axes,
+                [height * 0.032, height * 0.014, height * 0.026],
+                6,
+                12,
+                skin_blush,
+                skin_response,
+            );
+            self.world_oriented_ellipsoid_with_surface_response(
+                add3(
+                    [x, y, z + height * 0.824],
+                    add3(basis.front_face, scale3(basis.right, side * height * 0.050)),
+                ),
+                axes,
+                [height * 0.034, height * 0.012, height * 0.018],
+                5,
+                10,
+                skin_subsurface,
+                skin_response,
+            );
+            self.world_oriented_rect_with_surface_response(
+                add3(
+                    [x, y, z + height * 0.888],
+                    add3(basis.front_face, scale3(basis.right, side * height * 0.040)),
+                ),
+                basis.right,
+                basis.up,
+                [height * 0.023, height * 0.0024],
+                skin_cool,
+                skin_response,
+            );
+            self.world_cylinder_between_with_surface_response(
+                add3(
+                    [x, y, z + height * 0.804],
+                    scale3(basis.right, side * height * 0.024),
+                ),
+                add3(
+                    [x, y, z + height * 0.742],
+                    add3(
+                        scale3(basis.right, side * height * 0.046),
+                        scale3(basis.forward, height * 0.008),
+                    ),
+                ),
+                height * 0.0042,
+                6,
+                skin_shadow,
+                skin_response,
+            );
+        }
+
+        self.world_oriented_ellipsoid_with_surface_response(
+            add3(
+                [x, y, z + height * 0.835],
+                add3(basis.front_face, scale3(basis.forward, height * 0.012)),
+            ),
+            axes,
+            [height * 0.034, height * 0.014, height * 0.018],
+            5,
+            10,
+            skin_subsurface,
+            skin_response,
+        );
+
+        let chest = add3(
+            [x, y, z + height * 0.640 + breath],
+            add3(
+                basis.front_body,
+                scale3(
+                    basis.right,
+                    (window_stable_unit(seed, 34_701) - 0.5) * height * 0.006,
+                ),
+            ),
+        );
+        self.world_oriented_ellipsoid_with_surface_response(
+            chest,
+            axes,
+            [height * 0.114, height * 0.030, height * 0.082],
+            7,
+            16,
+            cloth_pressure,
+            cloth_response,
+        );
+        self.world_oriented_ellipsoid_with_surface_response(
+            add3(
+                [x, y, z + height * 0.542 - crouch * height * 0.016],
+                basis.front_body,
+            ),
+            axes,
+            [height * 0.086, height * 0.026, height * 0.056],
+            6,
+            14,
+            window_scale_color(cloth_pressure, 0.82),
+            cloth_response,
+        );
+        self.world_oriented_rect_with_surface_response(
+            add3([x, y, z + height * 0.604 + breath * 0.6], basis.front_body),
+            basis.right,
+            basis.up,
+            [height * 0.094, height * 0.0022],
+            window_scale_color(cloth_pressure, 1.18),
+            cloth_response,
+        );
+
+        for index in 0..form_count {
+            let side = if index % 2 == 0 { -1.0 } else { 1.0 };
+            let band = (index / 2) % 5;
+            let salt = index as u64;
+            let gait = side * locomotion * height * 0.018;
+            let (vertical, lateral, forward_offset, width, length, color, response) = match band {
+                0 => (
+                    0.718,
+                    side * 0.126,
+                    0.074 - side * gait * 0.18,
+                    0.024,
+                    0.052,
+                    cloth_pressure,
+                    cloth_response,
+                ),
+                1 => (
+                    0.586,
+                    side * 0.102,
+                    0.080,
+                    0.020,
+                    0.064,
+                    cloth_crease,
+                    cloth_response,
+                ),
+                2 => (
+                    0.420,
+                    side * 0.185,
+                    0.092 - side * gait * 0.34,
+                    0.016,
+                    0.040,
+                    skin_subsurface,
+                    skin_response,
+                ),
+                3 => (
+                    0.336,
+                    side * 0.068,
+                    0.084 + side * gait * 0.28 + crouch * 0.026,
+                    0.026,
+                    0.074,
+                    cloth_pressure,
+                    cloth_response,
+                ),
+                _ => (
+                    0.170,
+                    side * 0.070,
+                    0.088 - side * gait * 0.22,
+                    0.020,
+                    0.054,
+                    window_scale_color(cloth_pressure, 0.72),
+                    cloth_response,
+                ),
+            };
+            let center = add3(
+                [x, y, z + height * vertical],
+                add3(
+                    scale3(
+                        basis.right,
+                        lateral * height
+                            + (window_stable_unit(seed, 35_101 + salt) - 0.5) * height * 0.006,
+                    ),
+                    scale3(basis.forward, forward_offset * height),
+                ),
+            );
+            self.world_oriented_ellipsoid_with_surface_response(
+                center,
+                axes,
+                [
+                    height * width,
+                    height * (0.010 + window_stable_unit(seed, 35_701 + salt) * 0.008),
+                    height * length,
+                ],
+                5,
+                10,
+                color,
+                response,
+            );
+            self.world_oriented_rect_with_surface_response(
+                add3(center, scale3(basis.forward, height * 0.012)),
+                normalize3(add3(basis.up, scale3(basis.right, -side * 0.12))),
+                basis.right,
+                [height * (length * 0.68), height * 0.0018],
+                if response == skin_response {
+                    skin_shadow
+                } else {
+                    cloth_crease
+                },
+                response,
+            );
+        }
+    }
+
     fn add_humanoid_cybernetic_detail(
         &mut self,
         instance: &WindowHumanoidProxyInstance<'_>,
@@ -14163,13 +14734,28 @@ impl WindowSceneGeometry {
         if proxy.face_features.is_empty() {
             return;
         }
+        if !humanoid_allows_mid_detail(&instance, proxy) {
+            return;
+        }
 
         let [x, y] = instance.center_meters;
         let z = instance.z_meters;
         let (forward, right, up) = humanoid_instance_orientation_basis(&instance);
         let face_offset = (proxy.height_meters * 0.085).clamp(0.105, 0.17);
+        let near_detail = humanoid_allows_near_detail(&instance, proxy);
 
         for feature in &proxy.face_features {
+            if !near_detail
+                && !matches!(
+                    feature.kind,
+                    HumanProxyFaceFeatureKind::LeftEye
+                        | HumanProxyFaceFeatureKind::RightEye
+                        | HumanProxyFaceFeatureKind::Mouth
+                        | HumanProxyFaceFeatureKind::NoseBridge
+                )
+            {
+                continue;
+            }
             let feature_center = add3(
                 [x, y, z + feature.height_meters],
                 add3(
@@ -15041,8 +15627,8 @@ fn add_window_human_bundle_mesh(
     let right = horizontal_direction(instance.billboard_right);
     let forward = normalize3([-right[1], right[0], 0.0]);
     let viewer_position = [
-        x + forward[0] * 4.0,
-        y + forward[1] * 4.0,
+        x + forward[0] * 2.0,
+        y + forward[1] * 2.0,
         instance.z_meters + 1.55,
     ];
     let mara = HumanState {
@@ -15761,6 +16347,33 @@ fn humanoid_detail_seed(instance: &WindowHumanoidProxyInstance<'_>) -> u64 {
         .rotate_left(17)
 }
 
+fn humanoid_viewer_distance_meters(
+    instance: &WindowHumanoidProxyInstance<'_>,
+    proxy: &HumanProxyGeometry,
+) -> f32 {
+    let body_focus = [
+        instance.center_meters[0],
+        instance.center_meters[1],
+        instance.z_meters + proxy.height_meters * 0.55,
+    ];
+    let delta = sub3(body_focus, instance.viewer_position);
+    dot3(delta, delta).sqrt()
+}
+
+fn humanoid_allows_mid_detail(
+    instance: &WindowHumanoidProxyInstance<'_>,
+    proxy: &HumanProxyGeometry,
+) -> bool {
+    humanoid_viewer_distance_meters(instance, proxy) <= (proxy.height_meters * 4.35).clamp(5.8, 8.2)
+}
+
+fn humanoid_allows_near_detail(
+    instance: &WindowHumanoidProxyInstance<'_>,
+    proxy: &HumanProxyGeometry,
+) -> bool {
+    humanoid_viewer_distance_meters(instance, proxy) <= (proxy.height_meters * 2.05).clamp(2.8, 4.1)
+}
+
 fn humanoid_has_visible_cybernetic_detail(
     instance: &WindowHumanoidProxyInstance<'_>,
     proxy: &HumanProxyGeometry,
@@ -16089,6 +16702,71 @@ fn humanoid_skin_warm_highlight_color(
         color[1] * 1.02 + wetness * 0.03,
         color[2] * 0.96 + wetness * 0.028,
         0.48,
+    ])
+}
+
+fn humanoid_soft_tissue_subsurface_color(
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> [f32; 4] {
+    let skin = humanoid_default_skin_color(color);
+    let injury = surface_state
+        .map(|surface| surface.injury_overlay)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    let bruise = surface_state
+        .map(|surface| surface.bruising)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    let wetness = surface_state
+        .map(|surface| surface.skin_wetness + surface.sweat_sheen * 0.25)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    window_clamp_color([
+        skin[0] * 0.96 + 0.035 + injury * 0.09 + wetness * 0.025,
+        skin[1] * 0.78 + 0.020 - bruise * 0.035 + wetness * 0.020,
+        skin[2] * 0.70 + 0.018 + bruise * 0.040 + wetness * 0.024,
+        0.42,
+    ])
+}
+
+fn humanoid_soft_tissue_blush_color(
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> [f32; 4] {
+    let skin = humanoid_default_skin_color(color);
+    let redness = surface_state
+        .map(|surface| {
+            surface.eye_redness * 0.18 + surface.injury_overlay * 0.26 + surface.bruising * 0.14
+        })
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    window_clamp_color([
+        skin[0] * 1.02 + 0.045 + redness * 0.12,
+        skin[1] * 0.76 + 0.018 - redness * 0.040,
+        skin[2] * 0.68 + 0.024 + redness * 0.035,
+        0.36,
+    ])
+}
+
+fn humanoid_clothing_pressure_color(
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> [f32; 4] {
+    let wetness = surface_state
+        .map(|surface| surface.clothing_wetness)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    let damage = surface_state
+        .map(|surface| surface.clothing_damage)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    let cloth = humanoid_clothing_color(color);
+    window_clamp_color([
+        cloth[0] * 1.14 + damage * 0.030,
+        cloth[1] * 1.10 + damage * 0.020,
+        cloth[2] * (1.05 + wetness * 0.22),
+        0.66,
     ])
 }
 
@@ -21157,7 +21835,7 @@ mod tests {
             WindowHumanoidProxyInstance::new([5.5, 0.0], 0.0, color)
                 .with_human(Some(&human))
                 .with_emotion(Some(&emotion))
-                .with_viewer_position([0.0, 0.0, 1.65]),
+                .with_viewer_position([5.5, -1.25, 1.25]),
         );
 
         let proxy = human_proxy_geometry_for_state(&human);
@@ -21334,24 +22012,34 @@ mod tests {
             vertex.color == humanoid_inner_mouth_color(color, None)
                 && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_SKIN
         }));
-        assert!(geometry.vertices.iter().any(|vertex| {
-            vertex.color == humanoid_limb_volume_color(HumanProxyPart::LeftForearm, color, None)
-                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_SKIN
-        }));
-        assert!(geometry.vertices.iter().any(|vertex| {
-            vertex.color == humanoid_limb_volume_color(HumanProxyPart::LeftThigh, color, None)
-                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH
-        }));
-        assert!(geometry.vertices.iter().any(|vertex| {
-            vertex.color == humanoid_limb_shadow_color(HumanProxyPart::LeftCalf, color, None)
-                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH
-        }));
+        assert!(
+            geometry.vertices.iter().all(|vertex| {
+                vertex.color != humanoid_limb_volume_color(HumanProxyPart::LeftForearm, color, None)
+                    && vertex.color
+                        != humanoid_limb_volume_color(HumanProxyPart::LeftThigh, color, None)
+                    && vertex.color
+                        != humanoid_limb_shadow_color(HumanProxyPart::LeftCalf, color, None)
+            }),
+            "runtime hero humans should avoid the separated limb-volume stack that reads as fractured geometry"
+        );
         assert!(geometry.vertices.iter().any(|vertex| {
             vertex.color == humanoid_skin_cool_shadow_color(color, None)
                 && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_SKIN
         }));
         assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_soft_tissue_subsurface_color(color, None)
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_SKIN
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_soft_tissue_blush_color(color, None)
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_SKIN
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
             vertex.color == humanoid_clothing_inner_layer_color(color, None)
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_clothing_pressure_color(color, None)
                 && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH
         }));
         assert!(geometry.vertices.iter().any(|vertex| {
@@ -21360,6 +22048,151 @@ mod tests {
         }));
         assert!(humanoid_trim_color()[1] < 0.7);
         assert!(humanoid_trim_color()[3] < 0.7);
+    }
+
+    #[test]
+    fn window_mid_distance_humanoid_uses_cohesive_shell_without_fragmented_part_stack() {
+        let human = HumanState {
+            human_id: 305,
+            quality_tier: QualityTier::HeroHighFidelityRuntime,
+        };
+        let color = [0.88, 0.66, 0.50, 1.0];
+        let proxy = human_proxy_geometry_for_state(&human);
+        let instance = WindowHumanoidProxyInstance::new([6.0, 0.0], 0.0, color)
+            .with_human(Some(&human))
+            .with_viewer_position([0.0, 0.0, 1.65])
+            .with_facing_yaw_radians(0.25)
+            .with_pose_weights(0.45, 0.0);
+
+        assert!(humanoid_allows_mid_detail(&instance, &proxy));
+        assert!(!humanoid_allows_near_detail(&instance, &proxy));
+
+        let mut geometry = WindowSceneGeometry::default();
+        geometry.add_humanoid_proxy(instance);
+
+        for surface_response in [
+            WINDOW_SURFACE_RESPONSE_HUMAN_SKIN,
+            WINDOW_SURFACE_RESPONSE_HUMAN_HAIR,
+            WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH,
+        ] {
+            assert!(
+                geometry
+                    .vertices
+                    .iter()
+                    .any(|vertex| vertex.surface_response == surface_response),
+                "{surface_response:?} should remain visible in the cohesive human shell"
+            );
+        }
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_default_skin_color(color)
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_SKIN
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_hair_color(color, None)
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_HAIR
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_boot_color(color)
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH
+        }));
+        assert!(
+            geometry.vertices.iter().all(|vertex| {
+                vertex.color != humanoid_limb_volume_color(HumanProxyPart::LeftForearm, color, None)
+                    && vertex.color
+                        != humanoid_limb_volume_color(HumanProxyPart::LeftThigh, color, None)
+                    && vertex.color
+                        != humanoid_limb_shadow_color(HumanProxyPart::LeftCalf, color, None)
+                    && vertex.color != humanoid_fingernail_color(color, None)
+            }),
+            "mid-distance humans should be a cohesive body shell without close-up limb fragments"
+        );
+
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        for vertex in geometry
+            .vertices
+            .iter()
+            .filter(|vertex| vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE)
+        {
+            min[0] = min[0].min(vertex.position[0]);
+            min[1] = min[1].min(vertex.position[1]);
+            min[2] = min[2].min(vertex.position[2]);
+            max[0] = max[0].max(vertex.position[0]);
+            max[1] = max[1].max(vertex.position[1]);
+            max[2] = max[2].max(vertex.position[2]);
+        }
+        let horizontal_span = (max[0] - min[0]).max(max[1] - min[1]);
+        assert!(
+            max[2] - min[2] > proxy.height_meters * 0.88,
+            "cohesive shell should preserve head-to-foot human height"
+        );
+        assert!(
+            horizontal_span > proxy.height_meters * 0.24,
+            "cohesive shell should preserve shoulders, arms, and feet"
+        );
+
+        let mut near = WindowSceneGeometry::default();
+        near.add_humanoid_proxy(
+            WindowHumanoidProxyInstance::new([6.0, 0.0], 0.0, color)
+                .with_human(Some(&human))
+                .with_viewer_position([6.0, -1.0, 1.25])
+                .with_facing_yaw_radians(0.25),
+        );
+        assert!(
+            near.vertices.len() > geometry.vertices.len(),
+            "only near humans should add the layered anatomical detail stack"
+        );
+    }
+
+    #[test]
+    fn window_far_hero_humanoid_suppresses_closeup_fragment_detail() {
+        let human = HumanState {
+            human_id: 303,
+            quality_tier: QualityTier::HeroHighFidelityRuntime,
+        };
+        let color = [0.86, 0.64, 0.46, 1.0];
+
+        let mut far = WindowSceneGeometry::default();
+        far.add_humanoid_proxy(
+            WindowHumanoidProxyInstance::new([12.0, 0.0], 0.0, color)
+                .with_human(Some(&human))
+                .with_viewer_position([0.0, 0.0, 1.65]),
+        );
+
+        assert!(far.vertices.iter().any(|vertex| {
+            vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_SKIN
+                && vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
+        }));
+        assert!(far.vertices.iter().any(|vertex| {
+            vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH
+                && vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
+        }));
+        assert!(
+            far.vertices.iter().all(|vertex| {
+                vertex.color != humanoid_soft_tissue_subsurface_color(color, None)
+                    && vertex.color != humanoid_soft_tissue_blush_color(color, None)
+                    && vertex.color != humanoid_clothing_pressure_color(color, None)
+                    && vertex.color != humanoid_eye_tearline_color(None)
+                    && vertex.color != humanoid_fingernail_color(color, None)
+            }),
+            "far hero humans should keep a cohesive silhouette instead of close-up fragment detail"
+        );
+
+        let mut near = WindowSceneGeometry::default();
+        near.add_humanoid_proxy(
+            WindowHumanoidProxyInstance::new([1.0, 0.0], 0.0, color)
+                .with_human(Some(&human))
+                .with_viewer_position([1.0, -1.0, 1.25]),
+        );
+
+        assert!(
+            near.vertices.len() > far.vertices.len(),
+            "near humans should be allowed to add controlled close-up detail"
+        );
+        assert!(near.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_soft_tissue_subsurface_color(color, None)
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_SKIN
+        }));
     }
 
     #[test]
@@ -21492,7 +22325,7 @@ mod tests {
             WindowHumanoidProxyInstance::new([5.5, 0.0], 0.0, [0.96, 0.72, 0.28, 1.0])
                 .with_human(Some(&human))
                 .with_surface_state(Some(surface.clone()))
-                .with_viewer_position([0.0, 0.0, 1.65]),
+                .with_viewer_position([5.5, -1.25, 1.25]),
         );
 
         for expected in [

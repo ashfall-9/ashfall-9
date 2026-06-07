@@ -6,6 +6,8 @@ pub mod beauty_scene_v19_bridge;
 pub mod beauty_scene_v19_capture;
 pub mod beauty_scene_v20_bridge;
 pub mod beauty_scene_v20_capture;
+pub mod beauty_scene_v21_bridge;
+pub mod beauty_scene_v21_capture;
 pub mod scenarios;
 pub mod windowed;
 

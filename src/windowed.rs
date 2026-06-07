@@ -5,6 +5,7 @@ use ashfall_materials::{
     MATERIAL_GLASS, MATERIAL_HUMAN_SKIN, MATERIAL_NEON_TUBE, MATERIAL_WATER, MATERIAL_WET_ASPHALT,
 };
 use ashfall_physics::{PlanarMotionSettings, constrain_planar_motion};
+#[cfg(test)]
 use ashfall_rendering::beauty_v16::BeautySceneV16;
 #[cfg(test)]
 use ashfall_rendering::beauty_v16::{
@@ -16,30 +17,45 @@ use ashfall_rendering::beauty_v17::{
     FacadeModuleV17, GroundedPuddleV17, HumanProxyV17, RoadPatchV17, ScatterFieldV17,
     VehicleProxyV17,
 };
+#[cfg(test)]
 use ashfall_rendering::beauty_v18::{
     BeautyArtifactCountersV18, BeautyArtifactPolicyV18, BeautyMaterialIdV18, BeautySurfaceIdV18,
     BeautyValidationInputV18, NaturalLightingRigV18, SurfaceTextureRecipeV18,
     TexturePageResolutionV18,
 };
-use ashfall_rendering::beauty_v19::{BeautySceneV19, validate_scene_v19};
+#[cfg(test)]
+use ashfall_rendering::beauty_v19::validate_scene_v19;
 #[cfg(test)]
 use ashfall_rendering::beauty_v19::{
-    CurbSegmentV19, FacadeModuleV19, GroundedWaterFilmV19, HumanProxyV19, LandfillPropV19,
-    PlantInstanceV19, RoadPatchV19, StoneInstanceV19, TerrainPatchV19, Vec3V19, VehicleProxyV19,
+    BeautySceneV19, CurbSegmentV19, FacadeModuleV19, GroundedWaterFilmV19, HumanProxyV19,
+    LandfillPropV19, PlantInstanceV19, RoadPatchV19, StoneInstanceV19, TerrainPatchV19, Vec3V19,
+    VehicleProxyV19,
 };
+#[cfg(test)]
+use ashfall_rendering::beauty_v20::validate_beauty_scene_v20;
+#[cfg(test)]
 use ashfall_rendering::beauty_v20::{
     BeautyMaterialIdV20, BeautySceneV20, BeautySurfaceIdV20, CurbSegmentV20, CurveObjectKindV20,
     CurveObjectV20, FacadeModuleV20, GroundedWaterFilmV20, HumanPoseStateV20, HumanProxyV20,
     LandfillPropV20, NaturalEnvironmentV20, PlantInstanceV20, RoadPatchV20, StoneInstanceV20,
     SurfaceTextureRecipeV20, TerrainPatchV20, Vec3V20, VehicleKindV20, VehicleProxyV20,
-    sample_material_v20, validate_beauty_scene_v20,
+    sample_material_v20,
+};
+use ashfall_rendering::beauty_v21::{
+    BeautyMaterialIdV21, BeautySceneV21, BeautySurfaceIdV21, CurbSegmentV21, CurveObjectKindV21,
+    CurveObjectV21, FacadeModuleV21, FrameBudgetConfigV21, GroundedWaterFilmV21, HumanPoseStateV21,
+    HumanProxyV21, LandfillPropKindV21, LandfillPropV21, NaturalEnvironmentV21, PlantInstanceV21,
+    RoadPatchV21, StoneInstanceV21, SurfaceTextureRecipeV21, TerrainPatchV21, Vec3V21,
+    VehicleKindV21, VehicleProxyV21, sample_material_v21, validate_beauty_scene_v21,
 };
 use ashfall_rendering::windowed::{
     WINDOW_CITY_INFRASTRUCTURE_DATA, WINDOW_CITY_INFRASTRUCTURE_DRAINAGE,
     WINDOW_CITY_INFRASTRUCTURE_POWER, WINDOW_CITY_INFRASTRUCTURE_SURVEILLANCE,
     WINDOW_CITY_INFRASTRUCTURE_TRANSIT, WINDOW_CITY_INFRASTRUCTURE_WATER,
     WINDOW_HUD_EVENT_STRIP_MAX_PULSES, WINDOW_SURFACE_RESPONSE_GLASS,
-    WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE, WINDOW_SURFACE_RESPONSE_METAL,
+    WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE, WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH,
+    WINDOW_SURFACE_RESPONSE_HUMAN_EYE, WINDOW_SURFACE_RESPONSE_HUMAN_HAIR,
+    WINDOW_SURFACE_RESPONSE_HUMAN_SKIN, WINDOW_SURFACE_RESPONSE_METAL,
     WINDOW_SURFACE_RESPONSE_ROUGH_DIRT, WINDOW_SURFACE_RESPONSE_WET_ROAD,
     WINDOW_WORLD_EVENT_MARKER_MAX_COUNT, WindowCameraControlSettings, WindowCityDangerFieldVisual,
     WindowCityDangerVisualKind, WindowCityDistrictVisualKind, WindowCityMaterialPlacementKind,
@@ -57,11 +73,7 @@ use ashfall_rendering::windowed::{
     window_world_marker_from_event,
 };
 #[cfg(test)]
-use ashfall_rendering::windowed::{
-    WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH, WINDOW_SURFACE_RESPONSE_HUMAN_CYBERNETIC,
-    WINDOW_SURFACE_RESPONSE_HUMAN_EYE, WINDOW_SURFACE_RESPONSE_HUMAN_HAIR,
-    WINDOW_SURFACE_RESPONSE_HUMAN_SKIN, WindowSceneVertex,
-};
+use ashfall_rendering::windowed::{WINDOW_SURFACE_RESPONSE_HUMAN_CYBERNETIC, WindowSceneVertex};
 use ashfall_voice::RodioEventAudioSink;
 use ashfall_worldgen::{
     CityCellStreamingDecision, CityCellStreamingState, CityRendererStreamingFeedback,
@@ -71,11 +83,16 @@ use ashfall_worldgen::{
     persistent_city_state_from_events, plan_city_cell_streaming,
 };
 
+#[cfg(test)]
 use crate::beauty_scene_v15_bridge::build_beauty_scene_v15;
+#[cfg(test)]
 use crate::beauty_scene_v16_bridge::build_beauty_scene_v16;
 use crate::beauty_scene_v17_bridge::build_beauty_scene_v17;
+#[cfg(test)]
 use crate::beauty_scene_v19_bridge::{BeautySceneBuildContextV19, build_beauty_scene_v19};
+#[cfg(test)]
 use crate::beauty_scene_v20_bridge::{BeautySceneBuildContextV20, build_beauty_scene_v20};
+use crate::beauty_scene_v21_bridge::{BeautySceneBuildContextV21, build_beauty_scene_v21};
 use crate::core::{MaterialDescriptor, MaterialId, MaterialState, QualityTier, Vec3};
 use crate::runtime::EngineRuntime;
 use crate::scenarios::{alley_city_generation_request, build_alley_runtime};
@@ -154,10 +171,18 @@ struct AlleyWindowScene {
     last_tick: u64,
     last_event_count: usize,
     last_gpu_pass_count: usize,
+    last_frame_ms: f32,
     last_event_summary: Option<String>,
     last_error: Option<String>,
     render_mode: WindowRenderMode,
     debug_overlays: WindowDebugOverlayFlags,
+    beauty_v21_retained_world: Option<BeautyV21RetainedWorldGeometry>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct BeautyV21RetainedWorldGeometry {
+    key: u64,
+    geometry: WindowSceneGeometry,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -374,10 +399,12 @@ impl AlleyWindowScene {
             last_tick,
             last_event_count: 0,
             last_gpu_pass_count: 0,
+            last_frame_ms: 0.0,
             last_event_summary: None,
             last_error: None,
             render_mode,
             debug_overlays,
+            beauty_v21_retained_world: None,
         }
     }
 
@@ -661,7 +688,7 @@ impl AlleyWindowScene {
             return [0.26, 0.02, 0.025, 1.0];
         }
 
-        NaturalEnvironmentV20::city_nature_landfill_day().clear_color_rgba()
+        NaturalEnvironmentV21::city_nature_landfill_day().clear_color_rgba()
     }
 
     fn title(&self) -> String {
@@ -709,6 +736,7 @@ impl AlleyWindowScene {
         self.scene_geometry().vertices
     }
 
+    #[cfg(test)]
     fn beauty_scene_v15(&self) -> ashfall_rendering::beauty::BeautySceneV15 {
         build_beauty_scene_v15(
             &self.city_template,
@@ -717,6 +745,7 @@ impl AlleyWindowScene {
         )
     }
 
+    #[cfg(test)]
     fn beauty_scene_v16(&self) -> BeautySceneV16 {
         build_beauty_scene_v16(
             &self.city_template,
@@ -733,6 +762,7 @@ impl AlleyWindowScene {
         )
     }
 
+    #[cfg(test)]
     fn beauty_validation_v18(&self) -> BeautyValidationInputV18 {
         BeautyValidationInputV18 {
             policy: BeautyArtifactPolicyV18::strict_beauty(),
@@ -807,6 +837,7 @@ impl AlleyWindowScene {
         }
     }
 
+    #[cfg(test)]
     fn beauty_scene_v19(&self) -> BeautySceneV19 {
         build_beauty_scene_v19(BeautySceneBuildContextV19 {
             world_seed: self.city_template.seed,
@@ -818,6 +849,7 @@ impl AlleyWindowScene {
         })
     }
 
+    #[cfg(test)]
     fn beauty_scene_v20(&self) -> BeautySceneV20 {
         build_beauty_scene_v20(BeautySceneBuildContextV20 {
             world_seed: self.city_template.seed,
@@ -826,6 +858,15 @@ impl AlleyWindowScene {
             include_city: true,
             include_nature: true,
             include_landfill: true,
+        })
+    }
+
+    fn beauty_scene_v21(&self) -> BeautySceneV21 {
+        build_beauty_scene_v21(BeautySceneBuildContextV21 {
+            frame_index: self.frame_index,
+            camera_xy: [self.camera.position[0], self.camera.position[1]],
+            use_moonlit_lighting: false,
+            measured_frame_ms: self.last_frame_ms,
         })
     }
 
@@ -1458,9 +1499,9 @@ impl AlleyWindowScene {
     fn scene_geometry(&self) -> WindowSceneGeometry {
         let mut geometry = WindowSceneGeometry::default();
         if self.render_mode == WindowRenderMode::Beauty {
-            let scene = self.beauty_scene_v20();
-            add_beauty_v20_sky_detail(&mut geometry, scene.environment, self.frame_index);
-            add_beauty_v20_geometry(&mut geometry, &scene, self.camera.position);
+            let scene = self.beauty_scene_v21();
+            add_beauty_v21_sky_detail(&mut geometry, scene.environment, self.frame_index);
+            add_beauty_v21_geometry(&mut geometry, &scene, self.camera.position);
             return geometry;
         }
 
@@ -1491,6 +1532,39 @@ impl AlleyWindowScene {
             self.add_hud(&mut geometry);
         }
 
+        geometry
+    }
+
+    fn scene_geometry_retained(&mut self) -> WindowSceneGeometry {
+        if self.render_mode != WindowRenderMode::Beauty {
+            return self.scene_geometry();
+        }
+
+        let scene = self.beauty_scene_v21();
+        let mut geometry = WindowSceneGeometry::default();
+        add_beauty_v21_sky_detail(&mut geometry, scene.environment, self.frame_index);
+        let world = self.beauty_v21_retained_world_geometry(&scene);
+        append_window_scene_geometry(&mut geometry, &world);
+        geometry
+    }
+
+    fn beauty_v21_retained_world_geometry(
+        &mut self,
+        scene: &BeautySceneV21,
+    ) -> WindowSceneGeometry {
+        let key = beauty_v21_retained_world_key(scene);
+        if let Some(retained) = &self.beauty_v21_retained_world
+            && retained.key == key
+        {
+            return retained.geometry.clone();
+        }
+
+        let mut geometry = WindowSceneGeometry::default();
+        add_beauty_v21_geometry(&mut geometry, scene, self.camera.position);
+        self.beauty_v21_retained_world = Some(BeautyV21RetainedWorldGeometry {
+            key,
+            geometry: geometry.clone(),
+        });
         geometry
     }
 
@@ -1687,6 +1761,8 @@ impl AlleyWindowScene {
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn add_beauty_v20_sky_detail(
     geometry: &mut WindowSceneGeometry,
     environment: NaturalEnvironmentV20,
@@ -1784,6 +1860,1077 @@ fn add_beauty_v20_sky_detail(
     }
 }
 
+fn add_beauty_v21_sky_detail(
+    geometry: &mut WindowSceneGeometry,
+    environment: NaturalEnvironmentV21,
+    frame_index: u64,
+) {
+    let far_depth = 0.99;
+    let clear = environment.clear_color_rgba();
+    let top = [
+        (clear[0] * 0.58).clamp(0.0, 1.0),
+        (clear[1] * 0.66).clamp(0.0, 1.0),
+        (clear[2] * 0.86).clamp(0.0, 1.0),
+        1.0,
+    ];
+    let horizon = [
+        (clear[0] * 1.38 + environment.fog_density_0_to_1 * 0.20).clamp(0.0, 1.0),
+        (clear[1] * 1.26 + environment.fog_density_0_to_1 * 0.18).clamp(0.0, 1.0),
+        (clear[2] * 1.08 + environment.sky_turbidity_0_to_1 * 0.06).clamp(0.0, 1.0),
+        1.0,
+    ];
+
+    let band_count = 8;
+    for band in 0..band_count {
+        let y0 = -1.0 + 2.0 * band as f32 / band_count as f32;
+        let y1 = -1.0 + 2.0 * (band + 1) as f32 / band_count as f32;
+        let t = band as f32 / (band_count - 1) as f32;
+        geometry.screen_rect(
+            [-1.0, y0],
+            [1.0, y1 + 0.002],
+            far_depth,
+            v20_mix_color(horizon, top, t * t),
+        );
+    }
+
+    geometry.screen_rect(
+        [-1.0, -0.57],
+        [1.0, -0.30],
+        far_depth - 0.001,
+        [
+            0.40 + environment.fog_density_0_to_1 * 0.24,
+            0.43 + environment.fog_density_0_to_1 * 0.20,
+            0.41 + environment.rain_intensity_0_to_1 * 0.13,
+            0.18 + environment.fog_density_0_to_1 * 0.18,
+        ],
+    );
+
+    let sun_x = (0.52 + environment.sun_direction_world[0] * 0.28).clamp(-0.82, 0.82);
+    let sun_y = (-0.10 + environment.sun_direction_world[2] * 0.68).clamp(-0.35, 0.82);
+    let sun_size = 0.026 + (environment.sun_intensity_lux / 55_000.0).clamp(0.0, 1.0) * 0.026;
+    geometry.screen_rect(
+        [sun_x - sun_size, sun_y - sun_size],
+        [sun_x + sun_size, sun_y + sun_size],
+        far_depth - 0.006,
+        [0.98, 0.78, 0.40, 0.68],
+    );
+    geometry.screen_rect(
+        [sun_x - sun_size * 0.46, sun_y - sun_size * 0.46],
+        [sun_x + sun_size * 0.46, sun_y + sun_size * 0.46],
+        far_depth - 0.008,
+        [1.0, 0.88, 0.56, 0.56],
+    );
+
+    let moon_x = (-0.62 + environment.moon_direction_world[0] * 0.20).clamp(-0.88, 0.88);
+    let moon_y = (0.26 + environment.moon_direction_world[2].max(0.0) * 0.30).clamp(-0.10, 0.78);
+    let moon_size = 0.016 + environment.moon_intensity_lux.clamp(0.0, 1.0) * 0.018;
+    geometry.screen_rect(
+        [moon_x - moon_size, moon_y - moon_size],
+        [moon_x + moon_size, moon_y + moon_size],
+        far_depth - 0.007,
+        [0.70, 0.76, 0.82, 0.16],
+    );
+
+    let cloud_count =
+        (4.0 + environment.cloud_coverage_0_to_1.clamp(0.0, 1.0) * 8.0).ceil() as usize;
+    let cloud_alpha =
+        (0.055 + environment.cloud_density_0_to_1.clamp(0.0, 1.0) * 0.12).clamp(0.0, 0.20);
+    for cloud in 0..cloud_count {
+        let seed = 0xC10D_2021 ^ cloud as u64;
+        let drift = ((frame_index as f32 * 0.00030) + v16_unit(seed, 1) * 0.10).fract();
+        let x = -0.92 + v16_unit(seed, 2) * 1.84 + (drift - 0.5) * 0.05;
+        let y = 0.00 + v16_unit(seed, 3) * 0.56;
+        let width = 0.16 + v16_unit(seed, 4) * 0.34;
+        let height = 0.016 + v16_unit(seed, 5) * 0.026;
+        let color = [
+            0.61 + environment.fog_density_0_to_1 * 0.10,
+            0.65 + environment.fog_density_0_to_1 * 0.09,
+            0.66 + environment.rain_intensity_0_to_1 * 0.07,
+            cloud_alpha,
+        ];
+        geometry.screen_rect(
+            [x - width, y - height],
+            [x + width, y + height],
+            far_depth - 0.003,
+            color,
+        );
+        geometry.screen_rect(
+            [x - width * 0.60, y - height * 1.88],
+            [x + width * 0.42, y - height * 0.72],
+            far_depth - 0.004,
+            [
+                color[0] * 0.74,
+                color[1] * 0.76,
+                color[2] * 0.80,
+                cloud_alpha * 0.64,
+            ],
+        );
+    }
+}
+
+fn add_beauty_v21_geometry(
+    geometry: &mut WindowSceneGeometry,
+    scene: &BeautySceneV21,
+    viewer_position: [f32; 3],
+) {
+    let budget = scene.frame_budget;
+    let mut visible_plants = 0_u32;
+    let mut visible_stones = 0_u32;
+    let mut visible_props = 0_u32;
+    let mut high_detail_humans = 0_u32;
+
+    for cell in scene
+        .cells
+        .iter()
+        .take(budget.max_visible_cells.max(1) as usize)
+    {
+        for terrain in &cell.terrain {
+            add_beauty_v21_terrain(geometry, &scene.material_recipes, terrain, budget);
+        }
+        for road in &cell.roads {
+            add_beauty_v21_road(geometry, &scene.material_recipes, road);
+        }
+        for curb in &cell.curbs {
+            add_beauty_v21_curb(geometry, &scene.material_recipes, curb);
+        }
+        for facade in &cell.facades {
+            add_beauty_v21_facade(geometry, &scene.material_recipes, facade);
+        }
+        for curve in &cell.curves {
+            add_beauty_v21_curve(geometry, &scene.material_recipes, curve);
+        }
+        for water in &cell.water_films {
+            add_beauty_v21_water_film(geometry, water);
+        }
+        for plant in &cell.plants {
+            if visible_plants >= budget.max_plants_visible {
+                break;
+            }
+            add_beauty_v21_plant(geometry, &scene.material_recipes, plant);
+            visible_plants += 1;
+        }
+        for stone in &cell.stones {
+            if visible_stones >= budget.max_stones_visible {
+                break;
+            }
+            add_beauty_v21_stone(geometry, &scene.material_recipes, stone);
+            visible_stones += 1;
+        }
+        for prop in &cell.landfill_props {
+            if visible_props >= budget.max_landfill_props_visible {
+                break;
+            }
+            add_beauty_v21_landfill_prop(geometry, &scene.material_recipes, prop);
+            visible_props += 1;
+        }
+        for human in &cell.humans {
+            add_beauty_v21_human(
+                geometry,
+                &scene.material_recipes,
+                human,
+                viewer_position,
+                high_detail_humans < budget.max_humans_high_detail,
+            );
+            high_detail_humans += 1;
+        }
+        for vehicle in &cell.vehicles {
+            add_beauty_v21_vehicle(geometry, &scene.material_recipes, vehicle);
+        }
+    }
+}
+
+fn beauty_v21_retained_world_key(scene: &BeautySceneV21) -> u64 {
+    let mut key = 0xB2A7_2021_u64;
+    key ^= scene.frame_budget.max_visible_cells as u64;
+    key ^= (scene.frame_budget.max_plants_visible as u64).rotate_left(7);
+    key ^= (scene.frame_budget.max_stones_visible as u64).rotate_left(13);
+    key ^= (scene.frame_budget.max_landfill_props_visible as u64).rotate_left(19);
+    key ^= (scene.frame_budget.max_humans_high_detail as u64).rotate_left(29);
+    key ^= (scene.material_recipes.len() as u64).rotate_left(37);
+    for recipe in &scene.material_recipes {
+        key ^= recipe.surface_id.0.rotate_left(11);
+        key ^= recipe.material_id.0.rotate_left(23);
+        key ^= (recipe.resolution.texels() as u64).rotate_left(41);
+    }
+    for cell in &scene.cells {
+        key ^= cell
+            .retained_cache_key
+            .rotate_left((cell.cell_id % 31) as u32);
+        key ^= (cell.visible_content_count() as u64).rotate_left(17);
+    }
+    key
+}
+
+fn append_window_scene_geometry(target: &mut WindowSceneGeometry, source: &WindowSceneGeometry) {
+    let base = u32::try_from(target.vertices.len())
+        .expect("window scene vertex count should fit u32 indices");
+    target.vertices.extend(source.vertices.iter().copied());
+    target
+        .indices
+        .extend(source.indices.iter().map(|index| index + base));
+}
+
+fn add_beauty_v21_terrain(
+    geometry: &mut WindowSceneGeometry,
+    recipes: &[SurfaceTextureRecipeV21],
+    terrain: &TerrainPatchV21,
+    budget: FrameBudgetConfigV21,
+) {
+    let seed = v21_seed(terrain.soil_surface.0, terrain.soil_material.0, terrain.id);
+    let size_x = terrain.bounds.max.x - terrain.bounds.min.x;
+    let size_y = terrain.bounds.max.y - terrain.bounds.min.y;
+    let density_scale = (budget.max_geometry_upload_mb_per_frame / 8.0).clamp(0.45, 1.0);
+    let columns = ((size_x / 4.0) * density_scale).ceil().clamp(4.0, 9.0) as usize;
+    let rows = ((size_y / 4.0) * density_scale).ceil().clamp(4.0, 9.0) as usize;
+    for ix in 0..columns {
+        for iy in 0..rows {
+            let x0 = terrain.bounds.min.x + size_x * ix as f32 / columns as f32;
+            let x1 = terrain.bounds.min.x + size_x * (ix + 1) as f32 / columns as f32;
+            let y0 = terrain.bounds.min.y + size_y * iy as f32 / rows as f32;
+            let y1 = terrain.bounds.min.y + size_y * (iy + 1) as f32 / rows as f32;
+            let cell_seed = seed ^ (ix as u64 * 0x31D) ^ (iy as u64 * 0x91B);
+            let base_z = terrain.bounds.min.z + 0.010;
+            let color = v21_material_color(
+                recipes,
+                terrain.soil_surface,
+                terrain.soil_material,
+                [(x0 + x1) * 0.5, (y0 + y1) * 0.5],
+                cell_seed,
+                1.0,
+            );
+            geometry.world_quad_with_surface_response(
+                [
+                    x0,
+                    y0,
+                    base_z + v16_signed(cell_seed, 1) * terrain.height_variation_meters * 0.07,
+                ],
+                [
+                    x1,
+                    y0,
+                    base_z + v16_signed(cell_seed, 2) * terrain.height_variation_meters * 0.07,
+                ],
+                [
+                    x1,
+                    y1,
+                    base_z + v16_signed(cell_seed, 3) * terrain.height_variation_meters * 0.07,
+                ],
+                [
+                    x0,
+                    y1,
+                    base_z + v16_signed(cell_seed, 4) * terrain.height_variation_meters * 0.07,
+                ],
+                color,
+                WINDOW_SURFACE_RESPONSE_SOIL_V18,
+            );
+
+            if v16_unit(cell_seed, 5) < terrain.stone_density_0_to_1 * 0.32 {
+                let radius = 0.035 + v16_unit(cell_seed, 6) * 0.075;
+                geometry.world_ellipsoid_with_surface_response(
+                    [
+                        (x0 + x1) * 0.5 + v16_signed(cell_seed, 7) * 0.80,
+                        (y0 + y1) * 0.5 + v16_signed(cell_seed, 8) * 0.80,
+                        base_z + radius * 0.34,
+                    ],
+                    [radius * 1.5, radius * 0.92, radius * 0.46],
+                    4,
+                    8,
+                    v21_material_color(
+                        recipes,
+                        BeautySurfaceIdV21(20_002),
+                        BeautyMaterialIdV21(4),
+                        [(x0 + x1) * 0.5, (y0 + y1) * 0.5],
+                        cell_seed ^ 0x5700,
+                        0.86,
+                    ),
+                    WINDOW_SURFACE_RESPONSE_STONE_V18,
+                );
+            }
+        }
+    }
+}
+
+fn add_beauty_v21_road(
+    geometry: &mut WindowSceneGeometry,
+    recipes: &[SurfaceTextureRecipeV21],
+    road: &RoadPatchV21,
+) {
+    for (segment_index, segment) in road.centerline.windows(2).enumerate() {
+        let start = v21_vec3(segment[0]);
+        let end = v21_vec3(segment[1]);
+        let Some(right) = v16_segment_right(start, end) else {
+            continue;
+        };
+        let forward = v16_segment_forward(start, end);
+        let half_width = road.width_meters * 0.5;
+        let crown = 0.012 + road.camber_0_to_1 * 0.026;
+        let seed = v21_seed(
+            road.surface.0,
+            road.material.0,
+            road.id ^ segment_index as u64,
+        );
+        let color = v21_material_color(
+            recipes,
+            road.surface,
+            road.material,
+            [(start[0] + end[0]) * 0.5, (start[1] + end[1]) * 0.5],
+            seed,
+            1.0,
+        );
+        geometry.world_quad_with_surface_response(
+            [
+                start[0] + right[0] * half_width,
+                start[1] + right[1] * half_width,
+                start[2] + crown + v16_signed(seed, 1) * road.unevenness_0_to_1 * 0.010,
+            ],
+            [
+                end[0] + right[0] * half_width,
+                end[1] + right[1] * half_width,
+                end[2] + crown + v16_signed(seed, 2) * road.unevenness_0_to_1 * 0.010,
+            ],
+            [
+                end[0] - right[0] * half_width,
+                end[1] - right[1] * half_width,
+                end[2] + crown + v16_signed(seed, 3) * road.unevenness_0_to_1 * 0.010,
+            ],
+            [
+                start[0] - right[0] * half_width,
+                start[1] - right[1] * half_width,
+                start[2] + crown + v16_signed(seed, 4) * road.unevenness_0_to_1 * 0.010,
+            ],
+            color,
+            WINDOW_SURFACE_RESPONSE_WET_ROAD,
+        );
+
+        for crack in 0..8 {
+            let crack_seed = seed ^ (crack as u64 * 0xC4AC);
+            let t = (crack as f32 + 0.5) / 8.0;
+            let lateral = v16_signed(crack_seed, 1) * half_width * 0.76;
+            geometry.world_oriented_rect_with_surface_response(
+                [
+                    start[0] + (end[0] - start[0]) * t + right[0] * lateral,
+                    start[1] + (end[1] - start[1]) * t + right[1] * lateral,
+                    start[2] + crown + 0.006 + crack as f32 * 0.0002,
+                ],
+                [forward[0], forward[1], 0.0],
+                [right[0], right[1], 0.0],
+                [
+                    0.08 + v16_unit(crack_seed, 2) * 0.24,
+                    0.004 + v16_unit(crack_seed, 3) * 0.012,
+                ],
+                [0.010, 0.009, 0.007, 0.44],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+    }
+}
+
+fn add_beauty_v21_curb(
+    geometry: &mut WindowSceneGeometry,
+    recipes: &[SurfaceTextureRecipeV21],
+    curb: &CurbSegmentV21,
+) {
+    let start = v21_vec3(curb.start);
+    let end = v21_vec3(curb.end);
+    let seed = v21_seed(curb.surface.0, curb.material.0, curb.id);
+    geometry.world_cylinder_between_with_surface_response(
+        [start[0], start[1], start[2] + curb.height_meters * 0.50],
+        [end[0], end[1], end[2] + curb.height_meters * 0.50],
+        curb.height_meters.clamp(0.04, 0.22),
+        10,
+        v21_material_color(
+            recipes,
+            curb.surface,
+            curb.material,
+            [start[0], start[1]],
+            seed,
+            0.92,
+        ),
+        WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+    );
+}
+
+fn add_beauty_v21_facade(
+    geometry: &mut WindowSceneGeometry,
+    recipes: &[SurfaceTextureRecipeV21],
+    facade: &FacadeModuleV21,
+) {
+    let min = v21_vec3(facade.bounds.min);
+    let max = v21_vec3(facade.bounds.max);
+    let seed = v21_seed(facade.surface.0, facade.material.0, facade.id);
+    geometry.world_micro_detailed_box_with_surface_response(
+        min,
+        max,
+        v21_material_color(
+            recipes,
+            facade.surface,
+            facade.material,
+            [facade.bounds.min.x, facade.bounds.min.y],
+            seed,
+            0.94,
+        ),
+        WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+        seed,
+        0.28 + facade.dirt_0_to_1 * 0.16,
+    );
+
+    let face_y = facade.bounds.min.y - 0.018;
+    let width = facade.bounds.max.x - facade.bounds.min.x;
+    let height = facade.bounds.max.z - facade.bounds.min.z;
+    let window_count = facade.window_count.max(1) as usize;
+    for window in 0..window_count {
+        let slot_seed = seed ^ (window as u64 * 0x6A55);
+        let x = facade.bounds.min.x + width * ((window as f32 + 0.5) / window_count as f32);
+        let z = facade.bounds.min.z + height * (0.26 + v16_unit(slot_seed, 1) * 0.56);
+        geometry.world_oriented_rect_with_surface_response(
+            [x, face_y, z],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.20, 0.24],
+            [0.22, 0.34, 0.40, 0.58],
+            WINDOW_SURFACE_RESPONSE_GLASS,
+        );
+    }
+}
+
+fn add_beauty_v21_curve(
+    geometry: &mut WindowSceneGeometry,
+    recipes: &[SurfaceTextureRecipeV21],
+    curve: &CurveObjectV21,
+) {
+    let seed = v21_seed(curve.surface.0, curve.material.0, curve.id);
+    let mut color = v21_material_color(
+        recipes,
+        curve.surface,
+        curve.material,
+        curve
+            .points
+            .first()
+            .map(|point| [point.x, point.y])
+            .unwrap_or_default(),
+        seed,
+        0.86,
+    );
+    if matches!(
+        curve.kind,
+        CurveObjectKindV21::Cable | CurveObjectKindV21::FenceWire
+    ) {
+        color = [0.024, 0.023, 0.021, 0.78];
+    }
+    let response = match curve.kind {
+        CurveObjectKindV21::Root => WINDOW_SURFACE_RESPONSE_PLANT_V18,
+        CurveObjectKindV21::Pipe
+        | CurveObjectKindV21::Cable
+        | CurveObjectKindV21::Hose
+        | CurveObjectKindV21::FenceWire => WINDOW_SURFACE_RESPONSE_METAL,
+    };
+    for segment in curve.points.windows(2) {
+        let start = v21_vec3(segment[0]);
+        let end = v21_vec3(segment[1]);
+        let mid = if curve.sag_0_to_1 > 0.04 {
+            [
+                (start[0] + end[0]) * 0.5,
+                (start[1] + end[1]) * 0.5,
+                (start[2] + end[2]) * 0.5 - curve.sag_0_to_1 * 0.30,
+            ]
+        } else {
+            end
+        };
+        geometry.world_cylinder_between_with_surface_response(
+            start,
+            mid,
+            curve.radius_meters,
+            8,
+            color,
+            response,
+        );
+        if mid != end {
+            geometry.world_cylinder_between_with_surface_response(
+                mid,
+                end,
+                curve.radius_meters,
+                8,
+                color,
+                response,
+            );
+        }
+    }
+}
+
+fn add_beauty_v21_water_film(geometry: &mut WindowSceneGeometry, water: &GroundedWaterFilmV21) {
+    if !water.visually_valid() || water.polygon.len() < 3 {
+        return;
+    }
+    let color = [
+        0.38,
+        0.55,
+        0.60,
+        0.16 + (1.0 - water.roughness_0_to_1).clamp(0.0, 1.0) * 0.10,
+    ];
+    let origin = v21_vec3(water.polygon[0]);
+    for pair in water.polygon[1..].windows(2) {
+        geometry.world_quad_with_surface_response(
+            [origin[0], origin[1], origin[2] + 0.002],
+            [
+                pair[0].x,
+                pair[0].y,
+                pair[0].z + 0.002 + water.edge_softness_0_to_1 * 0.0005,
+            ],
+            [
+                pair[1].x,
+                pair[1].y,
+                pair[1].z + 0.002 + water.edge_softness_0_to_1 * 0.0005,
+            ],
+            [origin[0], origin[1], origin[2] + 0.002],
+            color,
+            WINDOW_SURFACE_RESPONSE_WET_ROAD,
+        );
+    }
+}
+
+fn add_beauty_v21_plant(
+    geometry: &mut WindowSceneGeometry,
+    recipes: &[SurfaceTextureRecipeV21],
+    plant: &PlantInstanceV21,
+) {
+    let seed = plant.clump_seed ^ v21_seed(plant.leaf_surface.0, plant.leaf_material.0, plant.id);
+    let root = v21_vec3(plant.position);
+    let axis = v18_horizontal_axis(seed, 1);
+    let height = plant.height_meters.clamp(0.05, 1.10);
+    let bend = plant.wind_response_0_to_1.clamp(0.0, 1.0);
+    let tip = [
+        root[0] + axis[0] * bend * height * 0.12,
+        root[1] + axis[1] * bend * height * 0.12,
+        root[2] + height,
+    ];
+    geometry.world_cylinder_between_with_surface_response(
+        root,
+        tip,
+        plant.radius_meters.clamp(0.010, 0.060) * 0.16,
+        6,
+        [0.095, 0.065, 0.038, 0.82],
+        WINDOW_SURFACE_RESPONSE_PLANT_V18,
+    );
+    let leaf_count = if height > 0.45 { 6 } else { 3 };
+    for leaf in 0..leaf_count {
+        let leaf_seed = seed ^ (leaf as u64 * 0x45);
+        let t = (leaf as f32 + 0.35) / leaf_count as f32;
+        let leaf_axis = v18_horizontal_axis(leaf_seed, 2);
+        let center = [
+            root[0] + (tip[0] - root[0]) * t + leaf_axis[0] * height * 0.10,
+            root[1] + (tip[1] - root[1]) * t + leaf_axis[1] * height * 0.10,
+            root[2] + height * (0.22 + t * 0.64),
+        ];
+        let color = v21_material_color(
+            recipes,
+            plant.leaf_surface,
+            plant.leaf_material,
+            [center[0], center[1]],
+            leaf_seed,
+            0.76,
+        );
+        geometry.world_ellipsoid_with_surface_response(
+            center,
+            [
+                height * (0.035 + v16_unit(leaf_seed, 3) * 0.040),
+                height * (0.015 + v16_unit(leaf_seed, 4) * 0.020),
+                height * 0.010,
+            ],
+            3,
+            7,
+            color,
+            WINDOW_SURFACE_RESPONSE_PLANT_V18,
+        );
+    }
+}
+
+fn add_beauty_v21_stone(
+    geometry: &mut WindowSceneGeometry,
+    recipes: &[SurfaceTextureRecipeV21],
+    stone: &StoneInstanceV21,
+) {
+    let seed = v21_seed(stone.surface.0, stone.material.0, stone.id);
+    let center = v21_vec3(stone.position);
+    let radius = stone.radius_meters.clamp(0.03, 0.52);
+    let color = v21_material_color(
+        recipes,
+        stone.surface,
+        stone.material,
+        [center[0], center[1]],
+        seed,
+        0.94,
+    );
+    geometry.world_ellipsoid_with_surface_response(
+        [center[0], center[1], center[2] + radius * 0.36],
+        [
+            radius * (1.08 + stone.irregularity_0_to_1 * 0.42),
+            radius * (0.70 + v16_unit(seed, 1) * 0.25),
+            radius * (0.38 + v16_unit(seed, 2) * 0.20),
+        ],
+        5,
+        10,
+        color,
+        WINDOW_SURFACE_RESPONSE_STONE_V18,
+    );
+}
+
+fn add_beauty_v21_landfill_prop(
+    geometry: &mut WindowSceneGeometry,
+    recipes: &[SurfaceTextureRecipeV21],
+    prop: &LandfillPropV21,
+) {
+    let seed = v21_seed(prop.surface.0, prop.material.0, prop.id);
+    let center = v21_vec3(prop.position);
+    let half = [
+        (prop.bounds.max.x - prop.bounds.min.x).abs() * 0.5,
+        (prop.bounds.max.y - prop.bounds.min.y).abs() * 0.5,
+        (prop.bounds.max.z - prop.bounds.min.z).abs() * 0.5,
+    ];
+    let axis = v18_horizontal_axis(seed, 3);
+    let side = v18_perp_axis(axis);
+    let color = v21_material_color(
+        recipes,
+        prop.surface,
+        prop.material,
+        [center[0], center[1]],
+        seed,
+        0.76,
+    );
+    match prop.kind {
+        LandfillPropKindV21::Tire => {
+            let radius = half[0].max(half[1]).clamp(0.14, 0.45);
+            geometry.world_ellipse_ring_with_surface_response(
+                [center[0], center[1], center[2] + radius * 0.22],
+                [radius * 0.28, radius * 0.16],
+                [radius * 0.88, radius * 0.54],
+                12,
+                [0.020, 0.019, 0.017, 0.90],
+                WINDOW_SURFACE_RESPONSE_LANDFILL_V18,
+            );
+        }
+        LandfillPropKindV21::PlasticSheet
+        | LandfillPropKindV21::Cardboard
+        | LandfillPropKindV21::FabricBundle
+        | LandfillPropKindV21::RustedMetalPanel => {
+            geometry.world_quad_with_surface_response(
+                v20_add2(center, axis, side, -half[0] * 1.05, -half[1] * 0.72, 0.020),
+                v20_add2(center, axis, side, half[0] * 0.80, -half[1] * 0.88, 0.026),
+                v20_add2(center, axis, side, half[0] * 0.96, half[1] * 0.60, 0.018),
+                v20_add2(center, axis, side, -half[0] * 0.70, half[1] * 0.86, 0.030),
+                color,
+                WINDOW_SURFACE_RESPONSE_LANDFILL_V18,
+            );
+            geometry.world_oriented_rect_with_surface_response(
+                v20_add2(center, axis, side, half[0] * 0.05, 0.0, 0.045),
+                axis,
+                side,
+                [half[0] * 0.50, half[1] * 0.035],
+                v20_mix_color(color, [0.48, 0.22, 0.08, color[3]], prop.dirt_0_to_1 * 0.34),
+                WINDOW_SURFACE_RESPONSE_LANDFILL_V18,
+            );
+        }
+        LandfillPropKindV21::BrokenGlass => {
+            geometry.world_ellipsoid_with_surface_response(
+                [center[0], center[1], center[2] + half[2] * 0.18],
+                [half[0] * 0.80, half[1] * 0.42, half[2] * 0.18],
+                3,
+                7,
+                [0.45, 0.62, 0.66, 0.26],
+                WINDOW_SURFACE_RESPONSE_GLASS,
+            );
+        }
+        LandfillPropKindV21::Crate => {
+            geometry.world_micro_detailed_box_with_surface_response(
+                v21_vec3(prop.bounds.min),
+                v21_vec3(prop.bounds.max),
+                color,
+                WINDOW_SURFACE_RESPONSE_LANDFILL_V18,
+                seed,
+                0.18 + prop.deformation_0_to_1 * 0.18,
+            );
+        }
+    }
+}
+
+fn add_beauty_v21_human(
+    geometry: &mut WindowSceneGeometry,
+    recipes: &[SurfaceTextureRecipeV21],
+    human: &HumanProxyV21,
+    viewer_position: [f32; 3],
+    high_detail: bool,
+) {
+    if !human.visually_valid() {
+        return;
+    }
+    let base = v21_vec3(human.world_position);
+    let (forward, right) = v17_yaw_vectors(human.facing_yaw_radians);
+    let pose_shift: f32 = match human.pose {
+        HumanPoseStateV21::Walking => 0.050,
+        HumanPoseStateV21::Running => 0.080,
+        HumanPoseStateV21::Crouched => -0.16,
+        HumanPoseStateV21::Sitting => -0.28,
+        HumanPoseStateV21::Idle => 0.0,
+    };
+    let (locomotion_weight, crouch_weight) = match human.pose {
+        HumanPoseStateV21::Walking => (0.58, 0.0),
+        HumanPoseStateV21::Running => (1.0, 0.0),
+        HumanPoseStateV21::Crouched => (0.18, 0.82),
+        HumanPoseStateV21::Sitting => (0.0, 1.0),
+        HumanPoseStateV21::Idle => (0.0, 0.0),
+    };
+    let seed = human.entity_id ^ 0x2021_0040;
+    let skin = v21_material_color(
+        recipes,
+        human.materials.skin_surface,
+        human.materials.skin_material,
+        [base[0], base[1]],
+        seed,
+        1.0,
+    );
+    let cloth = v21_material_color(
+        recipes,
+        human.materials.clothing_surface,
+        human.materials.clothing_material,
+        [base[0] + 0.2, base[1]],
+        seed ^ 0xC107,
+        1.0,
+    );
+    let hair = v21_material_color(
+        recipes,
+        human.materials.hair_surface,
+        human.materials.hair_material,
+        [base[0] - 0.12, base[1] + 0.04],
+        seed ^ 0x0A17,
+        0.96,
+    );
+    let shoe = v21_material_color(
+        recipes,
+        human.materials.shoe_surface,
+        human.materials.shoe_material,
+        [base[0] + 0.08, base[1] - 0.18],
+        seed ^ 0x500E,
+        0.98,
+    );
+    geometry.world_quad_with_surface_response(
+        [
+            base[0] - right[0] * human.proportions.shoulder_width_meters * 0.30 - forward[0] * 0.15,
+            base[1] - right[1] * human.proportions.shoulder_width_meters * 0.30 - forward[1] * 0.15,
+            base[2] + 0.006,
+        ],
+        [
+            base[0] + right[0] * human.proportions.shoulder_width_meters * 0.38 - forward[0] * 0.10,
+            base[1] + right[1] * human.proportions.shoulder_width_meters * 0.38 - forward[1] * 0.10,
+            base[2] + 0.007,
+        ],
+        [
+            base[0] + right[0] * human.proportions.shoulder_width_meters * 0.34 + forward[0] * 0.17,
+            base[1] + right[1] * human.proportions.shoulder_width_meters * 0.34 + forward[1] * 0.17,
+            base[2] + 0.006,
+        ],
+        [
+            base[0] - right[0] * human.proportions.shoulder_width_meters * 0.34 + forward[0] * 0.12,
+            base[1] - right[1] * human.proportions.shoulder_width_meters * 0.34 + forward[1] * 0.12,
+            base[2] + 0.007,
+        ],
+        [0.018, 0.015, 0.012, 0.22],
+        WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+    );
+    let render_human = HumanState {
+        human_id: human.entity_id,
+        quality_tier: if high_detail {
+            QualityTier::HeroHighFidelityRuntime
+        } else {
+            QualityTier::NormalRuntime
+        },
+    };
+    geometry.add_humanoid_proxy(
+        WindowHumanoidProxyInstance::new([base[0], base[1]], base[2] + pose_shift.max(-0.20), skin)
+            .with_human(Some(&render_human))
+            .with_surface_state(Some(v20_human_surface_state(seed)))
+            .with_viewer_position(viewer_position)
+            .with_facing_yaw_radians(human.facing_yaw_radians)
+            .with_pose_weights(locomotion_weight, crouch_weight),
+    );
+    add_beauty_v21_human_material_overlays(
+        geometry,
+        human,
+        base,
+        forward,
+        right,
+        skin,
+        cloth,
+        hair,
+        shoe,
+        high_detail && v21_human_viewer_distance_meters(human, viewer_position) <= 4.2,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_beauty_v21_human_material_overlays(
+    geometry: &mut WindowSceneGeometry,
+    human: &HumanProxyV21,
+    base: [f32; 3],
+    forward: [f32; 2],
+    right: [f32; 2],
+    skin: [f32; 4],
+    cloth: [f32; 4],
+    hair: [f32; 4],
+    shoe: [f32; 4],
+    near_detail: bool,
+) {
+    let p = human.proportions;
+    let right3 = [right[0], right[1], 0.0];
+    let forward3 = [forward[0], forward[1], 0.0];
+    let up = [0.0, 0.0, 1.0];
+    let axes = [right3, forward3, up];
+    let crouch_drop = match human.pose {
+        HumanPoseStateV21::Crouched => p.height_meters * 0.055,
+        HumanPoseStateV21::Sitting => p.height_meters * 0.105,
+        _ => 0.0,
+    };
+    let chest_z = p.leg_length_meters + p.torso_height_meters * 0.58 - crouch_drop;
+    let abdomen_z = p.leg_length_meters + p.torso_height_meters * 0.36 - crouch_drop;
+    let head_z = p.height_meters - p.head_height_meters * 0.45 - crouch_drop * 0.32;
+
+    geometry.world_oriented_rect_with_surface_response(
+        v17_offset(
+            base,
+            forward,
+            right,
+            p.torso_depth_meters * 0.48,
+            0.0,
+            chest_z,
+        ),
+        right3,
+        up,
+        [p.shoulder_width_meters * 0.34, p.torso_height_meters * 0.18],
+        cloth,
+        WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH,
+    );
+    geometry.world_oriented_rect_with_surface_response(
+        v17_offset(
+            base,
+            forward,
+            right,
+            p.torso_depth_meters * 0.50,
+            0.0,
+            abdomen_z,
+        ),
+        right3,
+        up,
+        [p.pelvis_width_meters * 0.31, p.torso_height_meters * 0.14],
+        v20_mix_color(cloth, [0.02, 0.025, 0.03, cloth[3]], 0.18),
+        WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH,
+    );
+    geometry.world_oriented_ellipsoid_with_surface_response(
+        v17_offset(
+            base,
+            forward,
+            right,
+            -p.head_height_meters * 0.055,
+            0.0,
+            head_z + p.head_height_meters * 0.28,
+        ),
+        axes,
+        [
+            p.head_height_meters * 0.35,
+            p.head_height_meters * 0.28,
+            p.head_height_meters * 0.18,
+        ],
+        5,
+        10,
+        hair,
+        WINDOW_SURFACE_RESPONSE_HUMAN_HAIR,
+    );
+
+    for side in [-1.0_f32, 1.0] {
+        let foot = v17_offset(
+            base,
+            forward,
+            right,
+            p.foot_length_meters * 0.20,
+            side * p.pelvis_width_meters * 0.34,
+            p.foot_length_meters * 0.11,
+        );
+        geometry.world_oriented_ellipsoid_with_surface_response(
+            foot,
+            axes,
+            [
+                p.foot_length_meters * 0.30,
+                p.foot_length_meters * 0.44,
+                p.foot_length_meters * 0.090,
+            ],
+            4,
+            10,
+            v20_mix_color(
+                shoe,
+                [0.012, 0.012, 0.012, shoe[3]],
+                if side < 0.0 { 0.12 } else { 0.0 },
+            ),
+            WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH,
+        );
+    }
+
+    if !near_detail {
+        return;
+    }
+
+    let face_center = v17_offset(
+        base,
+        forward,
+        right,
+        p.head_height_meters * 0.29,
+        0.0,
+        head_z,
+    );
+    for side in [-1.0_f32, 1.0] {
+        geometry.world_oriented_rect_with_surface_response(
+            [
+                face_center[0] + right[0] * side * p.head_height_meters * 0.15,
+                face_center[1] + right[1] * side * p.head_height_meters * 0.15,
+                face_center[2] + p.head_height_meters * 0.065,
+            ],
+            right3,
+            up,
+            [p.head_height_meters * 0.025, p.head_height_meters * 0.009],
+            [0.92, 0.98, 1.0, 0.92],
+            WINDOW_SURFACE_RESPONSE_HUMAN_EYE,
+        );
+    }
+    geometry.world_oriented_rect_with_surface_response(
+        [
+            face_center[0],
+            face_center[1],
+            face_center[2] - p.head_height_meters * 0.10,
+        ],
+        right3,
+        up,
+        [p.head_height_meters * 0.085, p.head_height_meters * 0.010],
+        v20_mix_color(skin, [0.11, 0.035, 0.032, skin[3]], 0.46),
+        WINDOW_SURFACE_RESPONSE_HUMAN_SKIN,
+    );
+    geometry.world_oriented_rect_with_surface_response(
+        v17_offset(
+            base,
+            forward,
+            right,
+            p.torso_depth_meters * 0.54,
+            0.0,
+            chest_z,
+        ),
+        up,
+        right3,
+        [
+            p.torso_height_meters * 0.22,
+            p.shoulder_width_meters * 0.004,
+        ],
+        v20_mix_color(cloth, [1.0, 1.0, 1.0, cloth[3]], 0.12),
+        WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH,
+    );
+}
+
+fn v21_human_viewer_distance_meters(human: &HumanProxyV21, viewer_position: [f32; 3]) -> f32 {
+    let p = human.proportions;
+    let body_focus = [
+        human.world_position.x,
+        human.world_position.y,
+        human.world_position.z + p.height_meters * 0.55,
+    ];
+    let dx = body_focus[0] - viewer_position[0];
+    let dy = body_focus[1] - viewer_position[1];
+    let dz = body_focus[2] - viewer_position[2];
+    (dx * dx + dy * dy + dz * dz).sqrt()
+}
+
+fn add_beauty_v21_vehicle(
+    geometry: &mut WindowSceneGeometry,
+    recipes: &[SurfaceTextureRecipeV21],
+    vehicle: &VehicleProxyV21,
+) {
+    if !vehicle.visually_valid() {
+        return;
+    }
+    let base = v21_vec3(vehicle.world_position);
+    let (forward2, right2) = v17_yaw_vectors(vehicle.facing_yaw_radians);
+    let forward = [forward2[0], forward2[1], 0.0];
+    let right = [right2[0], right2[1], 0.0];
+    let seed = vehicle.entity_id ^ 0xCA12_2021;
+    let length = vehicle.proportions.length_meters;
+    let half_width = vehicle.proportions.width_meters * 0.5;
+    let wheel_radius = vehicle.proportions.wheel_radius_meters;
+    let body_z = base[2] + wheel_radius + vehicle.proportions.height_meters * 0.20;
+    let mut body_color = v21_material_color(
+        recipes,
+        vehicle.materials.body_surface,
+        vehicle.materials.body_material,
+        [base[0], base[1]],
+        seed,
+        1.0,
+    );
+    if matches!(vehicle.kind, VehicleKindV21::LandfillLoader) {
+        body_color = v20_mix_color(body_color, [0.48, 0.36, 0.14, 1.0], 0.48);
+    }
+    geometry.world_oriented_rect_with_surface_response(
+        [base[0], base[1], base[2] + 0.024],
+        forward,
+        right,
+        [length * 0.60, half_width * 0.72],
+        [0.022, 0.019, 0.016, 0.30],
+        WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+    );
+    geometry.world_ellipsoid_with_surface_response(
+        v17_offset(base, forward2, right2, 0.0, 0.0, body_z - base[2]),
+        [
+            length * 0.48,
+            half_width * 0.86,
+            vehicle.proportions.height_meters * 0.22,
+        ],
+        6,
+        14,
+        body_color,
+        WINDOW_SURFACE_RESPONSE_METAL,
+    );
+    geometry.world_ellipsoid_with_surface_response(
+        v17_offset(
+            base,
+            forward2,
+            right2,
+            -length * 0.06,
+            0.0,
+            body_z - base[2] + vehicle.proportions.cabin_height_meters * 0.30,
+        ),
+        [
+            length * 0.22,
+            half_width * 0.52,
+            vehicle.proportions.cabin_height_meters * 0.20,
+        ],
+        5,
+        10,
+        [0.22, 0.34, 0.39, 0.60],
+        WINDOW_SURFACE_RESPONSE_GLASS,
+    );
+    for axle in [-0.34_f32, 0.34] {
+        for side in [-1.0_f32, 1.0] {
+            let wheel_center = v17_offset(
+                base,
+                forward2,
+                right2,
+                length * axle,
+                side * half_width * 0.88,
+                wheel_radius,
+            );
+            geometry.world_ellipse_ring_with_surface_response(
+                wheel_center,
+                [wheel_radius * 0.28, wheel_radius * 0.20],
+                [wheel_radius * 0.64, wheel_radius * 0.50],
+                12,
+                [0.018, 0.017, 0.015, 0.94],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 fn add_beauty_v20_geometry(
     geometry: &mut WindowSceneGeometry,
     scene: &BeautySceneV20,
@@ -1826,6 +2973,7 @@ fn add_beauty_v20_geometry(
     }
 }
 
+#[cfg(test)]
 fn add_beauty_v20_terrain(
     geometry: &mut WindowSceneGeometry,
     recipes: &[SurfaceTextureRecipeV20],
@@ -1968,6 +3116,7 @@ fn add_beauty_v20_terrain(
     }
 }
 
+#[cfg(test)]
 fn add_beauty_v20_road(
     geometry: &mut WindowSceneGeometry,
     recipes: &[SurfaceTextureRecipeV20],
@@ -2071,6 +3220,7 @@ fn add_beauty_v20_road(
     }
 }
 
+#[cfg(test)]
 fn add_beauty_v20_curb(
     geometry: &mut WindowSceneGeometry,
     recipes: &[SurfaceTextureRecipeV20],
@@ -2122,6 +3272,7 @@ fn add_beauty_v20_curb(
     }
 }
 
+#[cfg(test)]
 fn add_beauty_v20_facade(
     geometry: &mut WindowSceneGeometry,
     recipes: &[SurfaceTextureRecipeV20],
@@ -2211,6 +3362,7 @@ fn add_beauty_v20_facade(
     }
 }
 
+#[cfg(test)]
 fn add_beauty_v20_curve(
     geometry: &mut WindowSceneGeometry,
     recipes: &[SurfaceTextureRecipeV20],
@@ -2278,6 +3430,7 @@ fn add_beauty_v20_curve(
     }
 }
 
+#[cfg(test)]
 fn add_beauty_v20_water_film(geometry: &mut WindowSceneGeometry, water: &GroundedWaterFilmV20) {
     if !water.is_grounded() {
         return;
@@ -2345,6 +3498,7 @@ fn add_beauty_v20_water_film(geometry: &mut WindowSceneGeometry, water: &Grounde
     );
 }
 
+#[cfg(test)]
 fn add_beauty_v20_plant(
     geometry: &mut WindowSceneGeometry,
     recipes: &[SurfaceTextureRecipeV20],
@@ -2454,6 +3608,7 @@ fn add_beauty_v20_plant(
     }
 }
 
+#[cfg(test)]
 fn add_beauty_v20_stone(
     geometry: &mut WindowSceneGeometry,
     recipes: &[SurfaceTextureRecipeV20],
@@ -2516,6 +3671,7 @@ fn add_beauty_v20_stone(
     }
 }
 
+#[cfg(test)]
 fn add_beauty_v20_landfill_prop(
     geometry: &mut WindowSceneGeometry,
     recipes: &[SurfaceTextureRecipeV20],
@@ -2742,6 +3898,7 @@ fn add_beauty_v20_landfill_prop(
     );
 }
 
+#[cfg(test)]
 fn add_beauty_v20_human(
     geometry: &mut WindowSceneGeometry,
     human: &HumanProxyV20,
@@ -2836,6 +3993,7 @@ fn add_beauty_v20_human(
     }
 }
 
+#[cfg(test)]
 fn add_beauty_v20_vehicle(
     geometry: &mut WindowSceneGeometry,
     recipes: &[SurfaceTextureRecipeV20],
@@ -3000,10 +4158,51 @@ fn add_beauty_v20_vehicle(
     }
 }
 
+fn v21_vec3(point: Vec3V21) -> [f32; 3] {
+    [point.x, point.y, point.z]
+}
+
+fn v21_seed(surface_id: u64, material_id: u64, salt: u64) -> u64 {
+    surface_id
+        .wrapping_mul(0x9E37)
+        .wrapping_add(material_id.rotate_left(13))
+        ^ salt.wrapping_mul(0xBF58_2021)
+}
+
+fn v21_material_color(
+    recipes: &[SurfaceTextureRecipeV21],
+    surface_id: BeautySurfaceIdV21,
+    material_id: BeautyMaterialIdV21,
+    uv_meters: [f32; 2],
+    seed: u64,
+    alpha: f32,
+) -> [f32; 4] {
+    let Some(recipe) = recipes
+        .iter()
+        .find(|recipe| recipe.surface_id == surface_id || recipe.material_id == material_id)
+    else {
+        return [0.34, 0.32, 0.28, alpha];
+    };
+    let sample = sample_material_v21(recipe, uv_meters, seed);
+    let relief = 0.82 + sample.height_0_to_1 * 0.24
+        - sample.roughness_0_to_1 * 0.05
+        - sample.dirt_0_to_1 * 0.12
+        + sample.wetness_0_to_1 * 0.04
+        + sample.structured_detail_score_0_to_1 * 0.05;
+    [
+        (sample.base_color_linear[0] * relief).clamp(0.0, 1.0),
+        (sample.base_color_linear[1] * relief).clamp(0.0, 1.0),
+        (sample.base_color_linear[2] * relief).clamp(0.0, 1.0),
+        alpha.clamp(0.0, 1.0),
+    ]
+}
+
+#[cfg(test)]
 fn v20_vec3(point: Vec3V20) -> [f32; 3] {
     [point.x, point.y, point.z]
 }
 
+#[cfg(test)]
 fn v20_normalize3(vector: [f32; 3]) -> [f32; 3] {
     let length = (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt();
     if length <= f32::EPSILON {
@@ -3013,12 +4212,14 @@ fn v20_normalize3(vector: [f32; 3]) -> [f32; 3] {
     }
 }
 
+#[cfg(test)]
 fn v20_seed(surface_id: u64, material_id: u64, salt: u64) -> u64 {
     surface_id.wrapping_mul(0x9E37_79B9).rotate_left(17)
         ^ material_id.rotate_left(31)
         ^ salt.wrapping_mul(0xBF58_476D)
 }
 
+#[cfg(test)]
 fn v20_material_color(
     recipes: &[SurfaceTextureRecipeV20],
     surface_id: BeautySurfaceIdV20,
@@ -3055,6 +4256,7 @@ fn v20_mix_color(left: [f32; 4], right: [f32; 4], amount: f32) -> [f32; 4] {
     ]
 }
 
+#[cfg(test)]
 fn v20_lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     [
         a[0] + (b[0] - a[0]) * t,
@@ -5703,6 +6905,7 @@ fn v16_signed(seed: u64, salt: u64) -> f32 {
 impl WindowScene for AlleyWindowScene {
     fn update(&mut self, input: &WindowInputState, dt_seconds: f32) -> WindowFrameState {
         self.frame_index = self.frame_index.saturating_add(1);
+        self.last_frame_ms = dt_seconds.max(0.0) * 1_000.0;
         self.camera
             .set_viewport_size_pixels(input.viewport_size_pixels);
         self.update_view_controls(input, dt_seconds);
@@ -5729,31 +6932,13 @@ impl WindowScene for AlleyWindowScene {
             steps += 1;
         }
         self.sync_render_snapshot(dt_seconds);
-        let beauty_v15_report = self.beauty_scene_v15().validate_for_beauty();
-        if self.render_mode == WindowRenderMode::Beauty && !beauty_v15_report.pass {
-            eprintln!("Beauty V15 validation failed: {beauty_v15_report:?}");
+        if self.render_mode == WindowRenderMode::Beauty {
+            let beauty_v21_report = validate_beauty_scene_v21(&self.beauty_scene_v21());
+            if !beauty_v21_report.passed {
+                eprintln!("Beauty V21 validation failed: {beauty_v21_report:?}");
+            }
         }
-        let beauty_v16_report = self.beauty_scene_v16().validate_for_visual_realism();
-        if self.render_mode == WindowRenderMode::Beauty && !beauty_v16_report.pass {
-            eprintln!("Beauty V16 validation failed: {beauty_v16_report:?}");
-        }
-        let beauty_v17_report = self.beauty_scene_v17().validate_for_visual_realism();
-        if self.render_mode == WindowRenderMode::Beauty && !beauty_v17_report.pass {
-            eprintln!("Beauty V17 validation failed: {beauty_v17_report:?}");
-        }
-        let beauty_v18_report = self.beauty_validation_v18().validate();
-        if self.render_mode == WindowRenderMode::Beauty && !beauty_v18_report.pass {
-            eprintln!("Beauty V18 validation failed: {beauty_v18_report:?}");
-        }
-        let beauty_v19_report = validate_scene_v19(&self.beauty_scene_v19());
-        if self.render_mode == WindowRenderMode::Beauty && !beauty_v19_report.passed {
-            eprintln!("Beauty V19 validation failed: {beauty_v19_report:?}");
-        }
-        let beauty_v20_report = validate_beauty_scene_v20(&self.beauty_scene_v20());
-        if self.render_mode == WindowRenderMode::Beauty && !beauty_v20_report.passed {
-            eprintln!("Beauty V20 validation failed: {beauty_v20_report:?}");
-        }
-        let geometry = self.scene_geometry();
+        let geometry = self.scene_geometry_retained();
         let snapshot_light = self
             .last_snapshot
             .as_ref()
@@ -6760,7 +7945,7 @@ mod tests {
         );
         assert_eq!(
             beauty.clear_color(),
-            NaturalEnvironmentV20::city_nature_landfill_day().clear_color_rgba()
+            NaturalEnvironmentV21::city_nature_landfill_day().clear_color_rgba()
         );
         assert!(
             beauty_v20_report.passed,
@@ -6946,6 +8131,50 @@ mod tests {
                 .vehicles
                 .iter()
                 .all(ashfall_rendering::beauty_v17::VehicleProxyV17::is_proportionate_non_box)
+        );
+    }
+
+    #[test]
+    fn beauty_v21_human_uses_cohesive_material_overlays_without_rough_body_blobs() {
+        let scene = build_beauty_scene_v21(BeautySceneBuildContextV21::default());
+        let human = scene
+            .cells
+            .iter()
+            .flat_map(|cell| cell.humans.iter())
+            .next()
+            .expect("V21 beauty scene should include humans");
+        let base = v21_vec3(human.world_position);
+        let mut geometry = WindowSceneGeometry::default();
+
+        add_beauty_v21_human(
+            &mut geometry,
+            &scene.material_recipes,
+            human,
+            [base[0], base[1] - 1.0, base[2] + 1.25],
+            true,
+        );
+
+        for response in [
+            WINDOW_SURFACE_RESPONSE_HUMAN_SKIN,
+            WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH,
+            WINDOW_SURFACE_RESPONSE_HUMAN_HAIR,
+            WINDOW_SURFACE_RESPONSE_HUMAN_EYE,
+        ] {
+            assert!(
+                geometry
+                    .vertices
+                    .iter()
+                    .any(|vertex| vertex.surface_response == response
+                        && vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE),
+                "{response:?} should be present on a close V21 beauty human"
+            );
+        }
+        assert!(
+            geometry.vertices.iter().all(|vertex| {
+                vertex.surface_response != WINDOW_SURFACE_RESPONSE_ROUGH_DIRT
+                    || vertex.position[2] <= base[2] + 0.08
+            }),
+            "V21 beauty humans should not draw duplicate rough-dirt head or torso blobs"
         );
     }
 
