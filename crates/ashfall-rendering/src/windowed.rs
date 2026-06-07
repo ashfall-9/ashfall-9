@@ -3202,6 +3202,9 @@ pub struct WindowHumanoidProxyInstance<'a> {
     pub emotion: Option<&'a EmotionState>,
     pub surface_state: Option<HumanSurfaceState>,
     pub viewer_position: [f32; 3],
+    pub facing_direction: Option<[f32; 2]>,
+    pub locomotion_weight_0_to_1: f32,
+    pub crouch_weight_0_to_1: f32,
 }
 
 impl<'a> WindowHumanoidProxyInstance<'a> {
@@ -3214,6 +3217,9 @@ impl<'a> WindowHumanoidProxyInstance<'a> {
             emotion: None,
             surface_state: None,
             viewer_position: [0.0, -1.0, 1.65],
+            facing_direction: None,
+            locomotion_weight_0_to_1: 0.0,
+            crouch_weight_0_to_1: 0.0,
         }
     }
 
@@ -3236,6 +3242,34 @@ impl<'a> WindowHumanoidProxyInstance<'a> {
         self.viewer_position = viewer_position;
         self
     }
+
+    pub fn with_facing_direction(mut self, facing_direction: [f32; 2]) -> Self {
+        let length_squared =
+            facing_direction[0] * facing_direction[0] + facing_direction[1] * facing_direction[1];
+        if length_squared > f32::EPSILON
+            && facing_direction[0].is_finite()
+            && facing_direction[1].is_finite()
+        {
+            let length = length_squared.sqrt();
+            self.facing_direction =
+                Some([facing_direction[0] / length, facing_direction[1] / length]);
+        }
+        self
+    }
+
+    pub fn with_facing_yaw_radians(self, yaw_radians: f32) -> Self {
+        self.with_facing_direction([yaw_radians.cos(), yaw_radians.sin()])
+    }
+
+    pub fn with_pose_weights(
+        mut self,
+        locomotion_weight_0_to_1: f32,
+        crouch_weight_0_to_1: f32,
+    ) -> Self {
+        self.locomotion_weight_0_to_1 = locomotion_weight_0_to_1.clamp(0.0, 1.0);
+        self.crouch_weight_0_to_1 = crouch_weight_0_to_1.clamp(0.0, 1.0);
+        self
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -3245,6 +3279,54 @@ struct HumanoidDetailBasis {
     up: [f32; 3],
     front_body: [f32; 3],
     front_face: [f32; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HumanoidOrientationBasis {
+    forward: [f32; 3],
+    right: [f32; 3],
+    up: [f32; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HumanoidPoseWeights {
+    locomotion: f32,
+    crouch: f32,
+}
+
+fn humanoid_instance_orientation_basis(
+    instance: &WindowHumanoidProxyInstance<'_>,
+) -> ([f32; 3], [f32; 3], [f32; 3]) {
+    let forward = instance
+        .facing_direction
+        .map(|direction| normalize3([direction[0], direction[1], 0.0]))
+        .filter(|direction| dot3(*direction, *direction) > f32::EPSILON)
+        .unwrap_or_else(|| {
+            horizontal_direction([
+                instance.viewer_position[0] - instance.center_meters[0],
+                instance.viewer_position[1] - instance.center_meters[1],
+                0.0,
+            ])
+        });
+    let right = normalize3([-forward[1], forward[0], 0.0]);
+    (forward, right, [0.0, 0.0, 1.0])
+}
+
+fn humanoid_oriented_point(
+    origin: [f32; 3],
+    basis: HumanoidOrientationBasis,
+    local: [f32; 3],
+) -> [f32; 3] {
+    add3(
+        origin,
+        add3(
+            add3(
+                scale3(basis.right, local[0]),
+                scale3(basis.forward, local[1]),
+            ),
+            scale3(basis.up, local[2]),
+        ),
+    )
 }
 
 impl WindowProceduralMeshInstance {
@@ -11587,10 +11669,16 @@ impl WindowSceneGeometry {
     pub fn add_humanoid_proxy(&mut self, instance: WindowHumanoidProxyInstance<'_>) {
         let [x, y] = instance.center_meters;
         let z = instance.z_meters;
+        let (forward, right, up) = humanoid_instance_orientation_basis(&instance);
         let proxy = instance
             .human
             .map(human_proxy_geometry_for_state)
             .unwrap_or_else(|| human_proxy_geometry_for_quality(QualityTier::NormalRuntime));
+        let orientation = HumanoidOrientationBasis { forward, right, up };
+        let pose = HumanoidPoseWeights {
+            locomotion: instance.locomotion_weight_0_to_1.clamp(0.0, 1.0),
+            crouch: instance.crouch_weight_0_to_1.clamp(0.0, 1.0),
+        };
 
         for body_part in &proxy.body_parts {
             self.add_humanoid_body_part(
@@ -11598,6 +11686,10 @@ impl WindowSceneGeometry {
                 body_part,
                 instance.color,
                 instance.surface_state.as_ref(),
+                proxy.detail_profile.silhouette_segments,
+                proxy.detail_profile.limb_volume_layer_count,
+                orientation,
+                pose,
             );
         }
 
@@ -11605,12 +11697,17 @@ impl WindowSceneGeometry {
         self.add_humanoid_face_features(instance, &proxy);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn add_humanoid_body_part(
         &mut self,
         origin: [f32; 3],
         body_part: &HumanProxyBox,
         color: [f32; 4],
         surface_state: Option<&HumanSurfaceState>,
+        silhouette_segments: u16,
+        limb_volume_layer_count: u8,
+        orientation: HumanoidOrientationBasis,
+        pose: HumanoidPoseWeights,
     ) {
         let min = body_part.local_min_meters;
         let max = body_part.local_max_meters;
@@ -11619,6 +11716,12 @@ impl WindowSceneGeometry {
         let part_color = humanoid_part_color(color, body_part.part, surface_state);
         let part_surface_response =
             humanoid_body_part_surface_response(body_part.part, surface_state);
+        let hero_silhouette = silhouette_segments >= 32;
+        let primary_rings = if hero_silhouette { 12 } else { 9 };
+        let primary_segments = if hero_silhouette { 24 } else { 16 };
+        let secondary_rings = if hero_silhouette { 7 } else { 5 };
+        let secondary_segments = if hero_silhouette { 16 } else { 12 };
+        let limb_segments = if hero_silhouette { 18 } else { 14 };
 
         if matches!(body_part.part, HumanProxyPart::Impostor) {
             self.world_box_with_surface_response(
@@ -11630,131 +11733,418 @@ impl WindowSceneGeometry {
             return;
         }
 
-        let center = [
-            (world_min[0] + world_max[0]) * 0.5,
-            (world_min[1] + world_max[1]) * 0.5,
-            (world_min[2] + world_max[2]) * 0.5,
+        let local_center = [
+            (min.x + max.x) * 0.5,
+            (min.y + max.y) * 0.5,
+            (min.z + max.z) * 0.5,
         ];
+        let center = humanoid_oriented_point(origin, orientation, local_center);
         let half_extent = [
-            ((world_max[0] - world_min[0]) * 0.5).max(0.01),
-            ((world_max[1] - world_min[1]) * 0.5).max(0.01),
-            ((world_max[2] - world_min[2]) * 0.5).max(0.01),
+            ((max.x - min.x) * 0.5).max(0.01),
+            ((max.y - min.y) * 0.5).max(0.01),
+            ((max.z - min.z) * 0.5).max(0.01),
         ];
+        let axes = [orientation.right, orientation.forward, orientation.up];
 
         match body_part.part {
-            HumanProxyPart::Torso => {
-                self.world_ellipsoid_with_surface_response(
+            HumanProxyPart::Torso
+            | HumanProxyPart::Pelvis
+            | HumanProxyPart::Abdomen
+            | HumanProxyPart::Chest => {
+                self.world_oriented_ellipsoid_with_surface_response(
                     center,
+                    axes,
                     half_extent,
-                    9,
-                    16,
+                    primary_rings,
+                    primary_segments,
                     part_color,
                     part_surface_response,
                 );
-                self.world_ellipsoid_with_surface_response(
-                    [center[0], center[1], center[2] - half_extent[2] * 0.18],
+                self.world_oriented_ellipsoid_with_surface_response(
+                    add3(center, scale3(orientation.up, -half_extent[2] * 0.18)),
+                    axes,
                     [
                         half_extent[0] * 0.86,
                         half_extent[1] * 0.92,
                         half_extent[2] * 0.34,
                     ],
-                    5,
-                    12,
+                    secondary_rings,
+                    secondary_segments,
                     window_scale_color(part_color, 0.72),
                     part_surface_response,
                 );
             }
-            HumanProxyPart::Head => {
-                self.world_ellipsoid_with_surface_response(
+            HumanProxyPart::Head | HumanProxyPart::HairCap => {
+                self.world_oriented_ellipsoid_with_surface_response(
                     center,
+                    axes,
                     half_extent,
-                    10,
-                    16,
+                    primary_rings,
+                    primary_segments,
                     part_color,
                     part_surface_response,
                 );
-                self.world_ellipsoid_with_surface_response(
-                    [
-                        center[0],
-                        center[1] - half_extent[1] * 0.08,
-                        center[2] + half_extent[2] * 0.22,
-                    ],
+                self.world_oriented_ellipsoid_with_surface_response(
+                    add3(
+                        add3(center, scale3(orientation.forward, -half_extent[1] * 0.08)),
+                        scale3(orientation.up, half_extent[2] * 0.22),
+                    ),
+                    axes,
                     [
                         half_extent[0] * 1.04,
                         half_extent[1] * 1.04,
                         half_extent[2] * 0.5,
                     ],
-                    5,
-                    14,
+                    secondary_rings,
+                    secondary_segments,
                     humanoid_hair_color(color, surface_state),
                     humanoid_hair_surface_response(surface_state),
+                );
+            }
+            HumanProxyPart::Neck => {
+                self.world_cylinder_between_with_surface_response(
+                    add3(center, scale3(orientation.up, -half_extent[2])),
+                    add3(center, scale3(orientation.up, half_extent[2])),
+                    half_extent[0].max(0.024),
+                    limb_segments,
+                    part_color,
+                    part_surface_response,
                 );
             }
             HumanProxyPart::LeftArm
             | HumanProxyPart::RightArm
             | HumanProxyPart::LeftLeg
-            | HumanProxyPart::RightLeg => {
+            | HumanProxyPart::RightLeg
+            | HumanProxyPart::LeftUpperArm
+            | HumanProxyPart::RightUpperArm
+            | HumanProxyPart::LeftForearm
+            | HumanProxyPart::RightForearm
+            | HumanProxyPart::LeftThigh
+            | HumanProxyPart::RightThigh
+            | HumanProxyPart::LeftCalf
+            | HumanProxyPart::RightCalf => {
                 let radius = half_extent[0].min(half_extent[1]).max(0.035) * 0.92;
-                let start = [center[0], center[1], world_min[2] + radius * 0.35];
-                let end = [center[0], center[1], world_max[2] - radius * 0.35];
+                let side = match body_part.part {
+                    HumanProxyPart::LeftArm
+                    | HumanProxyPart::LeftUpperArm
+                    | HumanProxyPart::LeftForearm
+                    | HumanProxyPart::LeftLeg
+                    | HumanProxyPart::LeftThigh
+                    | HumanProxyPart::LeftCalf => -1.0,
+                    _ => 1.0,
+                };
+                let z_low = min.z + radius * 0.35;
+                let z_high = max.z - radius * 0.35;
+                let local_mid_y = (min.y + max.y) * 0.5;
+                let stride_offset = side * pose.locomotion * half_extent[2] * 0.30;
+                let arm_swing_offset = -stride_offset * 0.68;
+                let crouch_forward = pose.crouch * half_extent[2] * 0.34;
+                let crouch_drop = pose.crouch * half_extent[2] * 0.16;
+                let (start_local, end_local) = match body_part.part {
+                    HumanProxyPart::LeftUpperArm | HumanProxyPart::RightUpperArm => (
+                        [
+                            local_center[0] - side * half_extent[0] * 0.18,
+                            local_mid_y - half_extent[1] * 0.12 + arm_swing_offset,
+                            z_high,
+                        ],
+                        [
+                            local_center[0] + side * half_extent[0] * 0.32,
+                            local_mid_y + half_extent[1] * 0.34 + arm_swing_offset,
+                            z_low,
+                        ],
+                    ),
+                    HumanProxyPart::LeftForearm | HumanProxyPart::RightForearm => (
+                        [
+                            local_center[0] + side * half_extent[0] * 0.24,
+                            local_mid_y + half_extent[1] * 0.20 + arm_swing_offset,
+                            z_high,
+                        ],
+                        [
+                            local_center[0] - side * half_extent[0] * 0.18,
+                            local_mid_y + half_extent[1] * 0.56 + arm_swing_offset,
+                            z_low - crouch_drop * 0.20,
+                        ],
+                    ),
+                    HumanProxyPart::LeftThigh | HumanProxyPart::RightThigh => (
+                        [
+                            local_center[0] - side * half_extent[0] * 0.10,
+                            local_mid_y - half_extent[1] * 0.08 + stride_offset,
+                            z_high - crouch_drop,
+                        ],
+                        [
+                            local_center[0] + side * half_extent[0] * 0.18,
+                            local_mid_y + half_extent[1] * 0.18 + stride_offset + crouch_forward,
+                            z_low - crouch_drop * 0.55,
+                        ],
+                    ),
+                    HumanProxyPart::LeftCalf | HumanProxyPart::RightCalf => (
+                        [
+                            local_center[0] + side * half_extent[0] * 0.16,
+                            local_mid_y + half_extent[1] * 0.18 + stride_offset + crouch_forward,
+                            z_high - crouch_drop * 0.45,
+                        ],
+                        [
+                            local_center[0] - side * half_extent[0] * 0.10,
+                            local_mid_y - half_extent[1] * 0.22 - stride_offset * 0.50,
+                            z_low,
+                        ],
+                    ),
+                    HumanProxyPart::LeftArm | HumanProxyPart::RightArm => (
+                        [
+                            local_center[0] - side * half_extent[0] * 0.12,
+                            local_mid_y - half_extent[1] * 0.10 + arm_swing_offset,
+                            z_high,
+                        ],
+                        [
+                            local_center[0] + side * half_extent[0] * 0.16,
+                            local_mid_y + half_extent[1] * 0.34 + arm_swing_offset,
+                            z_low - crouch_drop * 0.20,
+                        ],
+                    ),
+                    HumanProxyPart::LeftLeg | HumanProxyPart::RightLeg => (
+                        [
+                            local_center[0] - side * half_extent[0] * 0.08,
+                            local_mid_y + stride_offset,
+                            z_high - crouch_drop,
+                        ],
+                        [
+                            local_center[0] + side * half_extent[0] * 0.08,
+                            local_mid_y - half_extent[1] * 0.14 - stride_offset * 0.35,
+                            z_low,
+                        ],
+                    ),
+                    _ => unreachable!("limb match should only receive limb proxy parts"),
+                };
+                let start = humanoid_oriented_point(origin, orientation, start_local);
+                let end = humanoid_oriented_point(origin, orientation, end_local);
                 self.world_cylinder_between_with_surface_response(
                     start,
                     end,
                     radius,
-                    14,
+                    limb_segments,
                     part_color,
                     part_surface_response,
+                );
+                self.add_humanoid_limb_volume_details(
+                    body_part.part,
+                    start,
+                    end,
+                    orientation,
+                    radius,
+                    half_extent,
+                    color,
+                    surface_state,
+                    part_surface_response,
+                    hero_silhouette,
+                    limb_volume_layer_count,
                 );
                 let joint_radii = [radius * 1.04, radius * 1.04, radius * 0.78];
-                self.world_ellipsoid_with_surface_response(
+                self.world_oriented_ellipsoid_with_surface_response(
                     start,
+                    axes,
                     joint_radii,
-                    5,
-                    10,
+                    secondary_rings,
+                    secondary_segments,
                     part_color,
                     part_surface_response,
                 );
-                self.world_ellipsoid_with_surface_response(
+                self.world_oriented_ellipsoid_with_surface_response(
                     end,
+                    axes,
                     joint_radii,
-                    5,
-                    10,
+                    secondary_rings,
+                    secondary_segments,
                     part_color,
                     part_surface_response,
                 );
-                let extremity_color = if matches!(
-                    body_part.part,
-                    HumanProxyPart::LeftArm | HumanProxyPart::RightArm
-                ) {
-                    humanoid_default_skin_color(color)
-                } else {
-                    humanoid_boot_color(color)
-                };
+                let (extremity_color, extremity_surface_response) =
+                    humanoid_skin_or_cloth_extremity_color(body_part.part, color, surface_state);
                 let extremity_radii = if matches!(
                     body_part.part,
-                    HumanProxyPart::LeftArm | HumanProxyPart::RightArm
+                    HumanProxyPart::LeftArm
+                        | HumanProxyPart::RightArm
+                        | HumanProxyPart::LeftForearm
+                        | HumanProxyPart::RightForearm
                 ) {
                     [radius * 0.9, radius * 0.72, radius * 0.64]
                 } else {
                     [radius * 1.42, radius * 0.86, radius * 0.58]
                 };
-                self.world_ellipsoid_with_surface_response(
+                self.world_oriented_ellipsoid_with_surface_response(
                     start,
+                    axes,
                     extremity_radii,
-                    5,
-                    10,
+                    secondary_rings,
+                    secondary_segments,
                     extremity_color,
-                    if matches!(
-                        body_part.part,
-                        HumanProxyPart::LeftArm | HumanProxyPart::RightArm
-                    ) {
-                        humanoid_skin_surface_response(surface_state)
-                    } else {
-                        humanoid_clothing_surface_response(surface_state)
-                    },
+                    extremity_surface_response,
+                );
+            }
+            HumanProxyPart::LeftHand | HumanProxyPart::RightHand => {
+                self.world_oriented_ellipsoid_with_surface_response(
+                    center,
+                    axes,
+                    [
+                        half_extent[0] * 1.10,
+                        half_extent[1] * 0.82,
+                        half_extent[2] * 0.74,
+                    ],
+                    secondary_rings,
+                    secondary_segments,
+                    part_color,
+                    part_surface_response,
+                );
+            }
+            HumanProxyPart::LeftFoot | HumanProxyPart::RightFoot => {
+                self.world_oriented_ellipsoid_with_surface_response(
+                    add3(center, scale3(orientation.forward, half_extent[1] * 0.20)),
+                    axes,
+                    [
+                        half_extent[0] * 1.04,
+                        half_extent[1] * 1.22,
+                        half_extent[2] * 0.72,
+                    ],
+                    secondary_rings,
+                    secondary_segments,
+                    part_color,
+                    part_surface_response,
                 );
             }
             HumanProxyPart::Impostor => {}
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn add_humanoid_limb_volume_details(
+        &mut self,
+        part: HumanProxyPart,
+        start: [f32; 3],
+        end: [f32; 3],
+        orientation: HumanoidOrientationBasis,
+        radius: f32,
+        half_extent: [f32; 3],
+        color: [f32; 4],
+        surface_state: Option<&HumanSurfaceState>,
+        surface_response: [f32; 4],
+        hero_silhouette: bool,
+        limb_volume_layer_count: u8,
+    ) {
+        let layers = limb_volume_layer_count as usize;
+        if layers == 0 {
+            return;
+        }
+
+        let span_vector = sub3(end, start);
+        let span_length = dot3(span_vector, span_vector).sqrt();
+        if span_length <= f32::EPSILON {
+            return;
+        }
+
+        let axis = normalize3(span_vector);
+        let axes = [orientation.right, orientation.forward, axis];
+        let is_arm = matches!(
+            part,
+            HumanProxyPart::LeftArm
+                | HumanProxyPart::RightArm
+                | HumanProxyPart::LeftUpperArm
+                | HumanProxyPart::RightUpperArm
+                | HumanProxyPart::LeftForearm
+                | HumanProxyPart::RightForearm
+        );
+        let is_lower = matches!(
+            part,
+            HumanProxyPart::LeftForearm
+                | HumanProxyPart::RightForearm
+                | HumanProxyPart::LeftCalf
+                | HumanProxyPart::RightCalf
+                | HumanProxyPart::LeftArm
+                | HumanProxyPart::RightArm
+                | HumanProxyPart::LeftLeg
+                | HumanProxyPart::RightLeg
+        );
+        let side = match part {
+            HumanProxyPart::LeftArm
+            | HumanProxyPart::LeftUpperArm
+            | HumanProxyPart::LeftForearm
+            | HumanProxyPart::LeftLeg
+            | HumanProxyPart::LeftThigh
+            | HumanProxyPart::LeftCalf => -1.0,
+            _ => 1.0,
+        };
+        let volume_color = humanoid_limb_volume_color(part, color, surface_state);
+        let shadow_color = humanoid_limb_shadow_color(part, color, surface_state);
+        let highlight_color = humanoid_limb_highlight_color(part, color, surface_state);
+        let rings = if hero_silhouette { 5 } else { 4 };
+        let segments = if hero_silhouette { 12 } else { 8 };
+        let primary_center = add3(start, scale3(span_vector, 0.48));
+        let secondary_center = add3(
+            start,
+            scale3(span_vector, if is_lower { 0.68 } else { 0.32 }),
+        );
+        let lateral_scale = if is_arm { 0.78 } else { 1.08 };
+        let front_scale = if is_arm { 0.68 } else { 0.82 };
+        let length_scale = if is_lower { 0.30 } else { 0.36 };
+
+        self.world_oriented_ellipsoid_with_surface_response(
+            primary_center,
+            axes,
+            [
+                radius * lateral_scale * if is_lower { 0.86 } else { 1.12 },
+                radius * front_scale * if is_lower { 0.78 } else { 1.08 },
+                (span_length * length_scale).max(half_extent[2] * 0.18),
+            ],
+            rings,
+            segments,
+            volume_color,
+            surface_response,
+        );
+
+        if layers >= 6 {
+            self.world_oriented_ellipsoid_with_surface_response(
+                secondary_center,
+                axes,
+                [
+                    radius * lateral_scale * if is_lower { 1.04 } else { 0.84 },
+                    radius * front_scale * if is_lower { 0.92 } else { 0.76 },
+                    (span_length * 0.22).max(half_extent[2] * 0.12),
+                ],
+                rings,
+                segments,
+                if is_lower {
+                    highlight_color
+                } else {
+                    shadow_color
+                },
+                surface_response,
+            );
+        }
+
+        if layers >= 10 {
+            let trim_axis = normalize3(add3(
+                orientation.forward,
+                scale3(orientation.right, side * 0.18),
+            ));
+            for t in [0.28_f32, 0.58, 0.78] {
+                let center = add3(
+                    add3(start, scale3(span_vector, t)),
+                    scale3(orientation.forward, radius * 0.52),
+                );
+                self.world_oriented_rect_with_surface_response(
+                    center,
+                    trim_axis,
+                    axis,
+                    [
+                        radius * if is_arm { 0.44 } else { 0.58 },
+                        span_length * 0.055,
+                    ],
+                    if t < 0.5 {
+                        highlight_color
+                    } else {
+                        shadow_color
+                    },
+                    surface_response,
+                );
+            }
         }
     }
 
@@ -11769,13 +12159,7 @@ impl WindowSceneGeometry {
 
         let [x, y] = instance.center_meters;
         let z = instance.z_meters;
-        let forward = horizontal_direction([
-            instance.viewer_position[0] - x,
-            instance.viewer_position[1] - y,
-            0.0,
-        ]);
-        let right = normalize3([forward[1], -forward[0], 0.0]);
-        let up = [0.0, 0.0, 1.0];
+        let (forward, right, up) = humanoid_instance_orientation_basis(instance);
         let height = proxy.height_meters;
         let body_front_offset = (height * 0.072).clamp(0.085, 0.135);
         let face_front_offset = (height * 0.086).clamp(0.11, 0.17);
@@ -12033,6 +12417,9 @@ impl WindowSceneGeometry {
         self.add_humanoid_hair_strand_cards(instance, proxy, basis, seed);
         self.add_humanoid_clothing_seams_and_motion(instance, proxy, basis, seed);
         self.add_humanoid_version4_anatomy_and_fabric_detail(instance, proxy, basis, seed);
+        self.add_humanoid_version5_photoreal_proxy_layers(instance, proxy, basis, seed);
+        self.add_humanoid_version6_silhouette_refinement(instance, proxy, basis, seed);
+        self.add_humanoid_version7_articulated_closeup_detail(instance, proxy, basis, seed);
 
         if humanoid_has_visible_cybernetic_detail(instance, proxy) {
             self.add_humanoid_cybernetic_detail(instance, proxy, basis, seed);
@@ -12052,11 +12439,7 @@ impl WindowSceneGeometry {
         let surface = instance.surface_state.as_ref();
         let skin_response = humanoid_skin_surface_response(surface);
         let pore_color = humanoid_skin_microdetail_color(instance.color, surface);
-        let pore_count = if proxy.quality_tier >= QualityTier::HeroHighFidelityRuntime {
-            24
-        } else {
-            10
-        };
+        let pore_count = proxy.detail_profile.skin_microdetail_points.max(10);
 
         for index in 0..pore_count {
             let salt = index as u64;
@@ -12078,8 +12461,15 @@ impl WindowSceneGeometry {
         }
 
         let wrinkle_color = humanoid_wrinkle_line_color(instance.color, surface);
-        for (index, vertical_fraction) in [0.872_f32, 0.895, 0.917].into_iter().enumerate() {
-            let width = height * (0.034 + index as f32 * 0.008);
+        let wrinkle_count = proxy.detail_profile.wrinkle_line_count.max(3);
+        for index in 0..wrinkle_count {
+            let t = if wrinkle_count <= 1 {
+                0.5
+            } else {
+                index as f32 / (wrinkle_count - 1) as f32
+            };
+            let vertical_fraction = 0.858 + t * 0.072;
+            let width = height * (0.022 + t * 0.044);
             let center = add3([x, y, z + height * vertical_fraction], basis.front_face);
             self.world_oriented_rect_with_surface_response(
                 center,
@@ -12200,11 +12590,7 @@ impl WindowSceneGeometry {
         let height = proxy.height_meters;
         let surface = instance.surface_state.as_ref();
         let hair_response = humanoid_hair_surface_response(surface);
-        let strand_count = if proxy.quality_tier >= QualityTier::HeroHighFidelityRuntime {
-            18
-        } else {
-            8
-        };
+        let strand_count = proxy.detail_profile.hair_card_count.max(8);
 
         for index in 0..strand_count {
             let salt = index as u64;
@@ -12321,6 +12707,7 @@ impl WindowSceneGeometry {
         let hero = proxy.quality_tier >= QualityTier::HeroHighFidelityRuntime;
         let ellipsoid_segments = if hero { (5, 12) } else { (4, 8) };
         let cylinder_segments = if hero { 8 } else { 6 };
+        let axes = [basis.right, basis.forward, basis.up];
 
         let neck_base = add3(
             [x, y, z + height * 0.754],
@@ -12343,8 +12730,9 @@ impl WindowSceneGeometry {
             [x, y, z + height * 0.818],
             add3(basis.front_face, scale3(basis.forward, height * 0.012)),
         );
-        self.world_ellipsoid_with_surface_response(
+        self.world_oriented_ellipsoid_with_surface_response(
             jaw_center,
+            axes,
             [height * 0.052, height * 0.026, height * 0.022],
             ellipsoid_segments.0,
             ellipsoid_segments.1,
@@ -12360,8 +12748,9 @@ impl WindowSceneGeometry {
                     scale3(basis.forward, height * 0.012),
                 ),
             );
-            self.world_ellipsoid_with_surface_response(
+            self.world_oriented_ellipsoid_with_surface_response(
                 shoulder,
+                axes,
                 [height * 0.036, height * 0.032, height * 0.024],
                 ellipsoid_segments.0,
                 ellipsoid_segments.1,
@@ -12389,8 +12778,9 @@ impl WindowSceneGeometry {
                     scale3(basis.right, side * height * 0.104),
                 ),
             );
-            self.world_ellipsoid_with_surface_response(
+            self.world_oriented_ellipsoid_with_surface_response(
                 ear_center,
+                axes,
                 [height * 0.012, height * 0.008, height * 0.025],
                 ellipsoid_segments.0,
                 ellipsoid_segments.1,
@@ -12466,8 +12856,9 @@ impl WindowSceneGeometry {
                 [x, y, z + height * 0.285],
                 add3(basis.front_body, scale3(basis.right, side * height * 0.068)),
             );
-            self.world_ellipsoid_with_surface_response(
+            self.world_oriented_ellipsoid_with_surface_response(
                 knee_center,
+                axes,
                 [height * 0.026, height * 0.016, height * 0.017],
                 ellipsoid_segments.0,
                 ellipsoid_segments.1,
@@ -12486,8 +12877,9 @@ impl WindowSceneGeometry {
                 boot_sole,
                 cloth_response,
             );
-            self.world_ellipsoid_with_surface_response(
+            self.world_oriented_ellipsoid_with_surface_response(
                 add3(ankle_center, scale3(basis.forward, height * 0.028)),
+                axes,
                 [height * 0.028, height * 0.046, height * 0.012],
                 ellipsoid_segments.0,
                 ellipsoid_segments.1,
@@ -12496,7 +12888,10 @@ impl WindowSceneGeometry {
             );
         }
 
-        let fold_count = if hero { 9 } else { 4 };
+        let fold_count = proxy
+            .detail_profile
+            .clothing_fold_count
+            .max(if hero { 9 } else { 4 });
         for index in 0..fold_count {
             let salt = index as u64;
             let lateral = (window_stable_unit(seed, 21_103 + salt) * 2.0 - 1.0) * height * 0.091;
@@ -12526,8 +12921,9 @@ impl WindowSceneGeometry {
                     scale3(basis.forward, height * 0.012),
                 ),
             );
-            self.world_ellipsoid_with_surface_response(
+            self.world_oriented_ellipsoid_with_surface_response(
                 palm_center,
+                axes,
                 [height * 0.018, height * 0.011, height * 0.025],
                 ellipsoid_segments.0,
                 ellipsoid_segments.1,
@@ -12572,6 +12968,1109 @@ impl WindowSceneGeometry {
                     skin_response,
                 );
             }
+        }
+    }
+
+    fn add_humanoid_version5_photoreal_proxy_layers(
+        &mut self,
+        instance: &WindowHumanoidProxyInstance<'_>,
+        proxy: &HumanProxyGeometry,
+        basis: HumanoidDetailBasis,
+        seed: u64,
+    ) {
+        if !proxy.detail_profile.supports_photoreal_near_proxy() {
+            return;
+        }
+
+        let [x, y] = instance.center_meters;
+        let z = instance.z_meters;
+        let height = proxy.height_meters;
+        let surface = instance.surface_state.as_ref();
+        let skin_response = humanoid_skin_surface_response(surface);
+        let eye_response = humanoid_eye_surface_response(surface);
+        let hair_response = humanoid_hair_surface_response(surface);
+        let cloth_response = humanoid_clothing_surface_response(surface);
+        let skin = humanoid_default_skin_color(instance.color);
+        let skin_shadow = humanoid_skin_soft_shadow_color(instance.color, surface);
+        let skin_highlight = humanoid_skin_warm_highlight_color(instance.color, surface);
+        let pore_color = humanoid_skin_microdetail_color(instance.color, surface);
+        let hair_color = humanoid_hair_color(instance.color, surface);
+        let brow_color = window_scale_color(hair_color, 0.74);
+        let cloth = humanoid_clothing_color(instance.color);
+        let seam = humanoid_clothing_seam_color(instance.color, surface);
+        let crease = humanoid_clothing_crease_color(instance.color, surface);
+        let cloth_edge = humanoid_clothing_worn_edge_color(instance.color, surface);
+        let face_front = basis.front_face;
+        let body_front = basis.front_body;
+        let axes = [basis.right, basis.forward, basis.up];
+
+        let nose_bridge = add3([x, y, z + height * 0.875], face_front);
+        self.world_cylinder_between_with_surface_response(
+            add3(nose_bridge, scale3(basis.up, height * 0.028)),
+            add3(
+                add3(nose_bridge, scale3(basis.forward, height * 0.022)),
+                scale3(basis.up, -height * 0.034),
+            ),
+            height * 0.008,
+            8,
+            window_scale_color(skin, 0.96),
+            skin_response,
+        );
+        self.world_oriented_ellipsoid_with_surface_response(
+            add3(
+                add3(nose_bridge, scale3(basis.forward, height * 0.028)),
+                scale3(basis.up, -height * 0.038),
+            ),
+            axes,
+            [height * 0.014, height * 0.010, height * 0.012],
+            6,
+            12,
+            skin_highlight,
+            skin_response,
+        );
+        for side in [-1.0_f32, 1.0] {
+            self.world_oriented_rect_with_surface_response(
+                add3(
+                    add3(nose_bridge, scale3(basis.forward, height * 0.038)),
+                    add3(
+                        scale3(basis.right, side * height * 0.010),
+                        scale3(basis.up, -height * 0.047),
+                    ),
+                ),
+                basis.right,
+                basis.up,
+                [height * 0.0042, height * 0.0026],
+                [0.058, 0.034, 0.026, 0.50],
+                skin_response,
+            );
+        }
+
+        for side in [-1.0_f32, 1.0] {
+            let eye_center = add3(
+                [x, y, z + height * 0.898],
+                add3(face_front, scale3(basis.right, side * height * 0.038)),
+            );
+            self.world_oriented_ellipsoid_with_surface_response(
+                add3(eye_center, scale3(basis.forward, height * 0.004)),
+                axes,
+                [height * 0.014, height * 0.005, height * 0.007],
+                6,
+                12,
+                [0.88, 0.96, 1.0, 0.82],
+                eye_response,
+            );
+            for lid in [-1.0_f32, 1.0] {
+                self.world_oriented_rect_with_surface_response(
+                    add3(eye_center, scale3(basis.up, lid * height * 0.007)),
+                    basis.right,
+                    basis.up,
+                    [height * 0.018, height * 0.0025],
+                    skin_shadow,
+                    skin_response,
+                );
+            }
+            self.world_oriented_rect_with_surface_response(
+                add3(eye_center, scale3(basis.up, height * 0.018)),
+                basis.right,
+                basis.up,
+                [height * 0.026, height * 0.0032],
+                brow_color,
+                hair_response,
+            );
+        }
+
+        for index in 0..proxy.detail_profile.eyelash_card_count {
+            let salt = index as u64;
+            let side = if index % 2 == 0 { -1.0 } else { 1.0 };
+            let row = (index / 2) as f32;
+            let lateral = side * height * (0.024 + row * 0.0058);
+            let center = add3(
+                [
+                    x,
+                    y,
+                    z + height * (0.904 + window_stable_unit(seed, 24_301 + salt) * 0.010),
+                ],
+                add3(face_front, scale3(basis.right, lateral)),
+            );
+            self.world_oriented_rect_with_surface_response(
+                center,
+                normalize3(add3(basis.right, scale3(basis.up, side * 0.18))),
+                basis.up,
+                [height * 0.0018, height * 0.013],
+                brow_color,
+                hair_response,
+            );
+        }
+
+        for index in 0..proxy.detail_profile.eyebrow_card_count {
+            let salt = index as u64;
+            let side = if index % 2 == 0 { -1.0 } else { 1.0 };
+            let row = (index / 2) as f32;
+            let lateral = side * height * (0.028 + row * 0.010);
+            self.world_oriented_rect_with_surface_response(
+                add3(
+                    [
+                        x,
+                        y,
+                        z + height * (0.923 + window_stable_unit(seed, 24_901 + salt) * 0.006),
+                    ],
+                    add3(face_front, scale3(basis.right, lateral)),
+                ),
+                normalize3(add3(basis.right, scale3(basis.up, side * 0.08))),
+                basis.up,
+                [height * 0.013, height * 0.0024],
+                humanoid_hair_strand_color(instance.color, surface, seed, salt),
+                hair_response,
+            );
+        }
+
+        let mouth_center = add3([x, y, z + height * 0.848], face_front);
+        let lip_color = window_clamp_color([
+            skin[0] * 0.72 + 0.13,
+            skin[1] * 0.54 + 0.045,
+            skin[2] * 0.52 + 0.045,
+            0.72,
+        ]);
+        self.world_oriented_rect_with_surface_response(
+            add3(mouth_center, scale3(basis.up, height * 0.004)),
+            basis.right,
+            basis.up,
+            [height * 0.026, height * 0.0034],
+            lip_color,
+            skin_response,
+        );
+        self.world_oriented_rect_with_surface_response(
+            add3(mouth_center, scale3(basis.up, -height * 0.004)),
+            basis.right,
+            basis.up,
+            [height * 0.023, height * 0.0038],
+            window_scale_color(lip_color, 0.72),
+            skin_response,
+        );
+        if proxy.detail_profile.has_teeth_tongue {
+            self.world_oriented_rect_with_surface_response(
+                add3(mouth_center, scale3(basis.forward, height * 0.003)),
+                basis.right,
+                basis.up,
+                [height * 0.020, height * 0.0024],
+                humanoid_tooth_enamel_color(instance.color, surface),
+                skin_response,
+            );
+            self.world_oriented_rect_with_surface_response(
+                add3(
+                    add3(mouth_center, scale3(basis.forward, height * 0.004)),
+                    scale3(basis.up, -height * 0.007),
+                ),
+                basis.right,
+                basis.up,
+                [height * 0.015, height * 0.0032],
+                humanoid_tongue_color(instance.color, surface),
+                skin_response,
+            );
+        }
+
+        for side in [-1.0_f32, 1.0] {
+            let cheek = add3(
+                [x, y, z + height * 0.858],
+                add3(face_front, scale3(basis.right, side * height * 0.064)),
+            );
+            self.world_oriented_ellipsoid_with_surface_response(
+                cheek,
+                axes,
+                [height * 0.032, height * 0.014, height * 0.024],
+                5,
+                10,
+                window_with_alpha(skin_highlight, 0.32),
+                skin_response,
+            );
+            self.world_oriented_rect_with_surface_response(
+                add3(cheek, scale3(basis.up, -height * 0.028)),
+                normalize3(add3(basis.right, scale3(basis.up, -side * 0.20))),
+                basis.up,
+                [height * 0.034, height * 0.0022],
+                skin_shadow,
+                skin_response,
+            );
+        }
+
+        for index in 0..24 {
+            let salt = index as u64;
+            let lateral = (window_stable_unit(seed, 25_101 + salt) * 2.0 - 1.0) * height * 0.088;
+            let vertical = height * (0.803 + window_stable_unit(seed, 25_701 + salt) * 0.134);
+            let size = height * (0.0016 + window_stable_unit(seed, 26_301 + salt) * 0.0024);
+            self.world_oriented_rect_with_surface_response(
+                add3(
+                    [x, y, z + vertical],
+                    add3(face_front, scale3(basis.right, lateral)),
+                ),
+                basis.right,
+                basis.up,
+                [size, size],
+                if index % 5 == 0 {
+                    [0.15, 0.105, 0.070, 0.32]
+                } else {
+                    pore_color
+                },
+                skin_response,
+            );
+        }
+
+        let hair_shell_center = add3(
+            [x, y, z + height * 0.942],
+            scale3(basis.forward, -height * 0.010),
+        );
+        self.world_oriented_ellipsoid_with_surface_response(
+            hair_shell_center,
+            axes,
+            [height * 0.092, height * 0.074, height * 0.076],
+            7,
+            16,
+            window_scale_color(hair_color, 0.82),
+            hair_response,
+        );
+        let extra_hair_cards = (proxy.detail_profile.hair_card_count / 3).max(12);
+        for index in 0..extra_hair_cards {
+            let salt = index as u64;
+            let t = index as f32 / extra_hair_cards.max(1) as f32;
+            let angle = t * std::f32::consts::TAU;
+            let lateral = angle.cos() * height * 0.082;
+            let drop = height * (0.040 + window_stable_unit(seed, 27_101 + salt) * 0.080);
+            self.world_oriented_rect_with_surface_response(
+                add3(
+                    [x, y, z + height * 0.936 - drop * 0.28],
+                    add3(
+                        add3(face_front, scale3(basis.right, lateral)),
+                        scale3(basis.forward, angle.sin() * height * 0.022),
+                    ),
+                ),
+                basis.right,
+                basis.up,
+                [height * 0.0022, drop * 0.62],
+                humanoid_hair_strand_color(instance.color, surface, seed, salt),
+                hair_response,
+            );
+        }
+
+        let collar = add3([x, y, z + height * 0.742], body_front);
+        for side in [-1.0_f32, 1.0] {
+            self.world_oriented_rect_with_surface_response(
+                add3(collar, scale3(basis.right, side * height * 0.046)),
+                normalize3(add3(basis.right, scale3(basis.up, -side * 0.32))),
+                basis.up,
+                [height * 0.052, height * 0.010],
+                window_scale_color(cloth, 1.16),
+                cloth_response,
+            );
+        }
+        for index in 0..proxy.detail_profile.clothing_stitch_count {
+            let side = if index % 2 == 0 { -1.0 } else { 1.0 };
+            let row = (index / 2) as f32;
+            let center = add3(
+                [x, y, z + height * (0.470 + row * 0.025)],
+                add3(body_front, scale3(basis.right, side * height * 0.074)),
+            );
+            self.world_oriented_rect_with_surface_response(
+                center,
+                basis.right,
+                basis.up,
+                [height * 0.006, height * 0.0018],
+                seam,
+                cloth_response,
+            );
+        }
+        if proxy.detail_profile.has_cloth_weave {
+            for index in 0..20 {
+                let salt = index as u64;
+                let lateral =
+                    (window_stable_unit(seed, 28_101 + salt) * 2.0 - 1.0) * height * 0.092;
+                let vertical = height * (0.505 + window_stable_unit(seed, 28_701 + salt) * 0.190);
+                self.world_oriented_rect_with_surface_response(
+                    add3(
+                        [x, y, z + vertical],
+                        add3(body_front, scale3(basis.right, lateral)),
+                    ),
+                    if index % 2 == 0 {
+                        basis.right
+                    } else {
+                        basis.up
+                    },
+                    if index % 2 == 0 {
+                        basis.up
+                    } else {
+                        basis.right
+                    },
+                    [height * 0.015, height * 0.0012],
+                    crease,
+                    cloth_response,
+                );
+            }
+        }
+
+        for side in [-1.0_f32, 1.0] {
+            let wrist = add3(
+                [x, y, z + height * 0.400],
+                add3(body_front, scale3(basis.right, side * height * 0.190)),
+            );
+            self.world_oriented_ellipsoid_with_surface_response(
+                wrist,
+                axes,
+                [height * 0.020, height * 0.013, height * 0.019],
+                5,
+                10,
+                skin,
+                skin_response,
+            );
+            for finger in 0..5 {
+                let lateral = side * (finger as f32 - 2.0) * height * 0.0056;
+                let start = add3(
+                    wrist,
+                    add3(
+                        scale3(basis.right, lateral),
+                        scale3(basis.up, -height * 0.012),
+                    ),
+                );
+                let end = add3(
+                    start,
+                    add3(
+                        scale3(basis.up, -height * (0.022 + finger as f32 * 0.0017)),
+                        scale3(basis.forward, height * (0.008 + finger as f32 * 0.0012)),
+                    ),
+                );
+                self.world_cylinder_between_with_surface_response(
+                    start,
+                    end,
+                    height * 0.0028,
+                    5,
+                    window_scale_color(skin, 0.94),
+                    skin_response,
+                );
+                self.world_oriented_rect_with_surface_response(
+                    end,
+                    basis.right,
+                    basis.up,
+                    [height * 0.0024, height * 0.0014],
+                    humanoid_fingernail_color(instance.color, surface),
+                    skin_response,
+                );
+            }
+        }
+
+        for side in [-1.0_f32, 1.0] {
+            let boot = add3(
+                [x, y, z + height * 0.050],
+                add3(body_front, scale3(basis.right, side * height * 0.066)),
+            );
+            self.world_oriented_rect_with_surface_response(
+                add3(boot, scale3(basis.forward, height * 0.046)),
+                basis.right,
+                basis.up,
+                [height * 0.035, height * 0.004],
+                cloth_edge,
+                cloth_response,
+            );
+            self.world_oriented_rect_with_surface_response(
+                add3(boot, scale3(basis.forward, height * 0.070)),
+                basis.right,
+                basis.up,
+                [height * 0.028, height * 0.003],
+                seam,
+                cloth_response,
+            );
+        }
+    }
+
+    fn add_humanoid_version6_silhouette_refinement(
+        &mut self,
+        instance: &WindowHumanoidProxyInstance<'_>,
+        proxy: &HumanProxyGeometry,
+        basis: HumanoidDetailBasis,
+        seed: u64,
+    ) {
+        if !proxy.detail_profile.supports_photoreal_near_proxy() {
+            return;
+        }
+
+        let [x, y] = instance.center_meters;
+        let z = instance.z_meters;
+        let height = proxy.height_meters;
+        let surface = instance.surface_state.as_ref();
+        let skin_response = humanoid_skin_surface_response(surface);
+        let cloth_response = humanoid_clothing_surface_response(surface);
+        let hair_response = humanoid_hair_surface_response(surface);
+        let skin_shadow = humanoid_skin_soft_shadow_color(instance.color, surface);
+        let skin_highlight = humanoid_skin_warm_highlight_color(instance.color, surface);
+        let cloth = humanoid_clothing_color(instance.color);
+        let cloth_edge = humanoid_clothing_worn_edge_color(instance.color, surface);
+        let crease = humanoid_clothing_crease_color(instance.color, surface);
+        let boot = humanoid_boot_color(instance.color);
+        let boot_sole = humanoid_boot_sole_color(instance.color, surface);
+        let body_front = basis.front_body;
+        let face_front = basis.front_face;
+        let axes = [basis.right, basis.forward, basis.up];
+        let pose_shift = (window_stable_unit(seed, 29_101) * 2.0 - 1.0) * height * 0.006;
+        let breath_lift = window_stable_unit(seed, 29_701) * height * 0.006;
+
+        let ribcage = add3(
+            [x, y, z + height * 0.642 + breath_lift],
+            add3(body_front, scale3(basis.right, pose_shift)),
+        );
+        self.world_oriented_ellipsoid_with_surface_response(
+            ribcage,
+            axes,
+            [height * 0.120, height * 0.043, height * 0.098],
+            8,
+            18,
+            window_scale_color(cloth, 1.08),
+            cloth_response,
+        );
+        let abdomen = add3(
+            [x, y, z + height * 0.538],
+            add3(body_front, scale3(basis.right, pose_shift * 0.45)),
+        );
+        self.world_oriented_ellipsoid_with_surface_response(
+            abdomen,
+            axes,
+            [height * 0.092, height * 0.034, height * 0.070],
+            7,
+            16,
+            window_scale_color(cloth, 0.88),
+            cloth_response,
+        );
+        let pelvis = add3(
+            [x, y, z + height * 0.444],
+            add3(body_front, scale3(basis.right, -pose_shift * 0.35)),
+        );
+        self.world_oriented_ellipsoid_with_surface_response(
+            pelvis,
+            axes,
+            [height * 0.106, height * 0.037, height * 0.050],
+            6,
+            14,
+            window_scale_color(cloth, 0.78),
+            cloth_response,
+        );
+
+        for side in [-1.0_f32, 1.0] {
+            let clavicle = add3(
+                [x, y, z + height * 0.754],
+                add3(body_front, scale3(basis.right, side * height * 0.044)),
+            );
+            self.world_oriented_rect_with_surface_response(
+                clavicle,
+                normalize3(add3(basis.right, scale3(basis.up, -side * 0.28))),
+                basis.up,
+                [height * 0.055, height * 0.0021],
+                skin_shadow,
+                skin_response,
+            );
+
+            let elbow = add3(
+                [x, y, z + height * 0.572],
+                add3(body_front, scale3(basis.right, side * height * 0.178)),
+            );
+            self.world_oriented_ellipsoid_with_surface_response(
+                elbow,
+                axes,
+                [height * 0.019, height * 0.014, height * 0.018],
+                5,
+                10,
+                crease,
+                cloth_response,
+            );
+            let wrist_cuff = add3(
+                [x, y, z + height * 0.388],
+                add3(body_front, scale3(basis.right, side * height * 0.186)),
+            );
+            self.world_oriented_rect_with_surface_response(
+                wrist_cuff,
+                basis.right,
+                basis.up,
+                [height * 0.025, height * 0.0042],
+                cloth_edge,
+                cloth_response,
+            );
+            for knuckle in 0..4 {
+                let lateral = side * (knuckle as f32 - 1.5) * height * 0.0068;
+                self.world_oriented_ellipsoid_with_surface_response(
+                    add3(
+                        wrist_cuff,
+                        add3(
+                            add3(
+                                scale3(basis.right, lateral),
+                                scale3(basis.up, -height * 0.020),
+                            ),
+                            scale3(basis.forward, height * 0.010),
+                        ),
+                    ),
+                    axes,
+                    [height * 0.0038, height * 0.0022, height * 0.0028],
+                    4,
+                    8,
+                    window_scale_color(skin_highlight, 0.92),
+                    skin_response,
+                );
+            }
+
+            let hip_shadow = add3(
+                [x, y, z + height * 0.452],
+                add3(body_front, scale3(basis.right, side * height * 0.088)),
+            );
+            self.world_oriented_rect_with_surface_response(
+                hip_shadow,
+                normalize3(add3(basis.up, scale3(basis.right, -side * 0.16))),
+                basis.right,
+                [height * 0.042, height * 0.002],
+                crease,
+                cloth_response,
+            );
+            let thigh_volume = add3(
+                [x, y, z + height * 0.342],
+                add3(body_front, scale3(basis.right, side * height * 0.065)),
+            );
+            self.world_oriented_ellipsoid_with_surface_response(
+                thigh_volume,
+                axes,
+                [height * 0.034, height * 0.024, height * 0.090],
+                6,
+                14,
+                window_scale_color(cloth, 0.94),
+                cloth_response,
+            );
+            let calf_volume = add3(
+                [x, y, z + height * 0.180],
+                add3(body_front, scale3(basis.right, side * height * 0.069)),
+            );
+            self.world_oriented_ellipsoid_with_surface_response(
+                calf_volume,
+                axes,
+                [height * 0.025, height * 0.020, height * 0.068],
+                5,
+                12,
+                window_scale_color(cloth, 0.82),
+                cloth_response,
+            );
+            let knee_shadow = add3(
+                [x, y, z + height * 0.286],
+                add3(body_front, scale3(basis.right, side * height * 0.067)),
+            );
+            self.world_oriented_rect_with_surface_response(
+                knee_shadow,
+                basis.right,
+                basis.up,
+                [height * 0.031, height * 0.0032],
+                crease,
+                cloth_response,
+            );
+
+            let shoe_center = add3(
+                [x, y, z + height * 0.043],
+                add3(body_front, scale3(basis.right, side * height * 0.068)),
+            );
+            self.world_oriented_ellipsoid_with_surface_response(
+                add3(shoe_center, scale3(basis.forward, height * 0.055)),
+                axes,
+                [height * 0.036, height * 0.056, height * 0.017],
+                5,
+                12,
+                boot,
+                cloth_response,
+            );
+            self.world_oriented_rect_with_surface_response(
+                add3(shoe_center, scale3(basis.forward, height * 0.080)),
+                basis.right,
+                basis.up,
+                [height * 0.026, height * 0.0022],
+                boot_sole,
+                cloth_response,
+            );
+            for lace in 0..3 {
+                self.world_oriented_rect_with_surface_response(
+                    add3(
+                        shoe_center,
+                        add3(
+                            scale3(basis.forward, height * (0.034 + lace as f32 * 0.012)),
+                            scale3(basis.up, height * 0.010),
+                        ),
+                    ),
+                    normalize3(add3(basis.right, scale3(basis.up, side * 0.18))),
+                    basis.up,
+                    [height * 0.019, height * 0.0012],
+                    cloth_edge,
+                    cloth_response,
+                );
+            }
+        }
+
+        for side in [-1.0_f32, 1.0] {
+            let eye_under = add3(
+                [x, y, z + height * 0.884],
+                add3(face_front, scale3(basis.right, side * height * 0.039)),
+            );
+            self.world_oriented_rect_with_surface_response(
+                eye_under,
+                basis.right,
+                basis.up,
+                [height * 0.024, height * 0.002],
+                skin_shadow,
+                skin_response,
+            );
+            let nasolabial = add3(
+                [x, y, z + height * 0.845],
+                add3(face_front, scale3(basis.right, side * height * 0.033)),
+            );
+            self.world_oriented_rect_with_surface_response(
+                nasolabial,
+                normalize3(add3(basis.up, scale3(basis.right, -side * 0.34))),
+                basis.right,
+                [height * 0.042, height * 0.0018],
+                window_with_alpha(skin_shadow, 0.40),
+                skin_response,
+            );
+            let sideburn = add3(
+                [x, y, z + height * 0.900],
+                add3(face_front, scale3(basis.right, side * height * 0.090)),
+            );
+            self.world_oriented_rect_with_surface_response(
+                sideburn,
+                basis.right,
+                basis.up,
+                [height * 0.004, height * 0.045],
+                humanoid_hair_strand_color(
+                    instance.color,
+                    surface,
+                    seed,
+                    30_000 + side.to_bits() as u64,
+                ),
+                hair_response,
+            );
+        }
+    }
+
+    fn add_humanoid_version7_articulated_closeup_detail(
+        &mut self,
+        instance: &WindowHumanoidProxyInstance<'_>,
+        proxy: &HumanProxyGeometry,
+        basis: HumanoidDetailBasis,
+        seed: u64,
+    ) {
+        if !proxy.detail_profile.supports_photoreal_near_proxy() {
+            return;
+        }
+
+        let [x, y] = instance.center_meters;
+        let z = instance.z_meters;
+        let height = proxy.height_meters;
+        let surface = instance.surface_state.as_ref();
+        let skin_response = humanoid_skin_surface_response(surface);
+        let cloth_response = humanoid_clothing_surface_response(surface);
+        let hair_response = humanoid_hair_surface_response(surface);
+        let skin = humanoid_default_skin_color(instance.color);
+        let skin_shadow = humanoid_skin_cool_shadow_color(instance.color, surface);
+        let skin_highlight = humanoid_skin_warm_highlight_color(instance.color, surface);
+        let cloth = humanoid_clothing_color(instance.color);
+        let inner_layer = humanoid_clothing_inner_layer_color(instance.color, surface);
+        let seam = humanoid_clothing_seam_color(instance.color, surface);
+        let crease = humanoid_clothing_crease_color(instance.color, surface);
+        let cloth_edge = humanoid_clothing_worn_edge_color(instance.color, surface);
+        let boot = humanoid_boot_color(instance.color);
+        let boot_sole = humanoid_boot_sole_color(instance.color, surface);
+        let hairline = humanoid_hairline_shadow_color(instance.color, surface);
+        let axes = [basis.right, basis.forward, basis.up];
+        let locomotion = instance.locomotion_weight_0_to_1.clamp(0.0, 1.0);
+        let crouch = instance.crouch_weight_0_to_1.clamp(0.0, 1.0);
+        let gait_swing = locomotion * height * 0.028;
+        let crouch_forward = crouch * height * 0.038;
+
+        let garment_layers = proxy.detail_profile.garment_layer_count.max(3) as usize;
+        let back_body = scale3(basis.forward, -height * 0.072);
+        self.world_oriented_rect_with_surface_response(
+            add3(
+                [x, y, z + height * 0.595],
+                add3(basis.front_body, scale3(basis.up, 0.0)),
+            ),
+            basis.right,
+            basis.up,
+            [height * 0.054, height * 0.112],
+            inner_layer,
+            cloth_response,
+        );
+        self.world_oriented_rect_with_surface_response(
+            add3([x, y, z + height * 0.632], back_body),
+            basis.right,
+            basis.up,
+            [height * 0.102, height * 0.126],
+            window_scale_color(cloth, 0.74),
+            cloth_response,
+        );
+        for layer in 0..garment_layers {
+            let t = if garment_layers <= 1 {
+                0.0
+            } else {
+                layer as f32 / (garment_layers - 1) as f32
+            };
+            let vertical = height * (0.462 + t * 0.118);
+            let half_width = height * (0.096 - t * 0.010).max(0.062);
+            self.world_oriented_rect_with_surface_response(
+                add3([x, y, z + vertical], basis.front_body),
+                basis.right,
+                basis.up,
+                [half_width, height * 0.0042],
+                if layer == 0 { cloth_edge } else { seam },
+                cloth_response,
+            );
+        }
+        for side in [-1.0_f32, 1.0] {
+            let side_panel = add3(
+                [x, y, z + height * 0.590],
+                add3(
+                    scale3(basis.right, side * height * 0.118),
+                    scale3(basis.forward, height * 0.004),
+                ),
+            );
+            self.world_oriented_rect_with_surface_response(
+                side_panel,
+                basis.forward,
+                basis.up,
+                [height * 0.0052, height * 0.172],
+                seam,
+                cloth_response,
+            );
+            self.world_oriented_rect_with_surface_response(
+                add3(side_panel, scale3(basis.forward, -height * 0.076)),
+                basis.forward,
+                basis.up,
+                [height * 0.004, height * 0.116],
+                window_scale_color(crease, 0.92),
+                cloth_response,
+            );
+        }
+
+        let hairline_count = proxy.detail_profile.hairline_detail_count.max(12) as usize;
+        for index in 0..hairline_count {
+            let salt = index as u64;
+            let t = if hairline_count <= 1 {
+                0.0
+            } else {
+                index as f32 / hairline_count as f32
+            };
+            let angle = t * std::f32::consts::TAU;
+            let lateral = angle.cos() * height * 0.084
+                + (window_stable_unit(seed, 31_101 + salt) - 0.5) * height * 0.006;
+            let forward_offset = angle.sin() * height * 0.060 - height * 0.006;
+            let drop = height * (0.018 + window_stable_unit(seed, 31_701 + salt) * 0.030);
+            let tangent = normalize3(add3(
+                scale3(basis.right, -angle.sin()),
+                scale3(basis.forward, angle.cos()),
+            ));
+            self.world_oriented_rect_with_surface_response(
+                add3(
+                    [x, y, z + height * 0.932 - drop * 0.35],
+                    add3(
+                        scale3(basis.right, lateral),
+                        scale3(basis.forward, forward_offset),
+                    ),
+                ),
+                tangent,
+                basis.up,
+                [
+                    height * (0.0020 + window_stable_unit(seed, 32_301 + salt) * 0.0014),
+                    drop,
+                ],
+                if index % 3 == 0 {
+                    hairline
+                } else {
+                    humanoid_hair_strand_color(instance.color, surface, seed, salt)
+                },
+                hair_response,
+            );
+        }
+        for side in [-1.0_f32, 1.0] {
+            self.world_oriented_ellipsoid_with_surface_response(
+                add3(
+                    [x, y, z + height * 0.906],
+                    add3(
+                        scale3(basis.right, side * height * 0.092),
+                        scale3(basis.forward, -height * 0.016),
+                    ),
+                ),
+                axes,
+                [height * 0.016, height * 0.018, height * 0.052],
+                5,
+                10,
+                hairline,
+                hair_response,
+            );
+        }
+        self.world_oriented_rect_with_surface_response(
+            add3(
+                [x, y, z + height * 0.872],
+                scale3(basis.forward, -height * 0.082),
+            ),
+            basis.right,
+            basis.up,
+            [height * 0.056, height * 0.036],
+            hairline,
+            hair_response,
+        );
+
+        for side in [-1.0_f32, 1.0] {
+            let wrist = add3(
+                [x, y, z + height * (0.394 - crouch * 0.018)],
+                add3(
+                    add3(basis.front_body, scale3(basis.right, side * height * 0.188)),
+                    scale3(basis.forward, -side * gait_swing * 0.46),
+                ),
+            );
+            let palm = add3(wrist, scale3(basis.forward, height * 0.014));
+            self.world_oriented_ellipsoid_with_surface_response(
+                palm,
+                axes,
+                [height * 0.020, height * 0.014, height * 0.026],
+                5,
+                10,
+                skin,
+                skin_response,
+            );
+            self.world_oriented_rect_with_surface_response(
+                add3(palm, scale3(basis.forward, height * 0.012)),
+                basis.right,
+                basis.up,
+                [height * 0.014, height * 0.0018],
+                skin_shadow,
+                skin_response,
+            );
+
+            let thumb_root = add3(
+                palm,
+                add3(
+                    add3(
+                        scale3(basis.right, -side * height * 0.018),
+                        scale3(basis.up, -height * 0.004),
+                    ),
+                    scale3(basis.forward, height * 0.012),
+                ),
+            );
+            let thumb_mid = add3(
+                thumb_root,
+                add3(
+                    add3(
+                        scale3(basis.right, -side * height * 0.018),
+                        scale3(basis.up, -height * 0.008),
+                    ),
+                    scale3(basis.forward, height * 0.010),
+                ),
+            );
+            let thumb_tip = add3(
+                thumb_mid,
+                add3(
+                    add3(
+                        scale3(basis.right, -side * height * 0.012),
+                        scale3(basis.up, -height * 0.008),
+                    ),
+                    scale3(basis.forward, height * 0.006),
+                ),
+            );
+            self.world_cylinder_between_with_surface_response(
+                thumb_root,
+                thumb_mid,
+                height * 0.0032,
+                5,
+                window_scale_color(skin, 0.95),
+                skin_response,
+            );
+            self.world_cylinder_between_with_surface_response(
+                thumb_mid,
+                thumb_tip,
+                height * 0.0028,
+                5,
+                window_scale_color(skin, 0.92),
+                skin_response,
+            );
+            self.world_oriented_rect_with_surface_response(
+                thumb_tip,
+                basis.right,
+                basis.up,
+                [height * 0.0028, height * 0.0015],
+                humanoid_fingernail_color(instance.color, surface),
+                skin_response,
+            );
+
+            for finger in 0..5 {
+                let finger_t = finger as f32 - 2.0;
+                let lateral = side * finger_t * height * 0.0057;
+                let root = add3(
+                    palm,
+                    add3(
+                        scale3(basis.right, lateral),
+                        scale3(basis.up, -height * 0.014),
+                    ),
+                );
+                let mid = add3(
+                    root,
+                    add3(
+                        scale3(basis.up, -height * (0.013 + finger as f32 * 0.0012)),
+                        scale3(basis.forward, height * (0.011 + finger as f32 * 0.0008)),
+                    ),
+                );
+                let tip = add3(
+                    mid,
+                    add3(
+                        scale3(basis.up, -height * (0.010 + finger as f32 * 0.0009)),
+                        scale3(basis.forward, height * 0.006),
+                    ),
+                );
+                self.world_oriented_ellipsoid_with_surface_response(
+                    root,
+                    axes,
+                    [height * 0.0038, height * 0.0026, height * 0.0034],
+                    4,
+                    8,
+                    skin_highlight,
+                    skin_response,
+                );
+                self.world_cylinder_between_with_surface_response(
+                    root,
+                    mid,
+                    height * 0.0027,
+                    5,
+                    window_scale_color(skin, 0.95),
+                    skin_response,
+                );
+                self.world_cylinder_between_with_surface_response(
+                    mid,
+                    tip,
+                    height * 0.0023,
+                    5,
+                    window_scale_color(skin, 0.91),
+                    skin_response,
+                );
+                self.world_oriented_ellipsoid_with_surface_response(
+                    mid,
+                    axes,
+                    [height * 0.0029, height * 0.0020, height * 0.0028],
+                    4,
+                    8,
+                    skin_shadow,
+                    skin_response,
+                );
+                self.world_oriented_rect_with_surface_response(
+                    tip,
+                    basis.right,
+                    basis.up,
+                    [height * 0.0023, height * 0.0014],
+                    humanoid_fingernail_color(instance.color, surface),
+                    skin_response,
+                );
+            }
+        }
+
+        let footwear_detail_count = proxy.detail_profile.footwear_detail_count.max(6) as usize;
+        for side in [-1.0_f32, 1.0] {
+            let stride = side * gait_swing * 0.72;
+            let shoe = add3(
+                [x, y, z + height * 0.044],
+                add3(
+                    add3(basis.front_body, scale3(basis.right, side * height * 0.068)),
+                    scale3(basis.forward, stride + crouch_forward + height * 0.020),
+                ),
+            );
+            let heel = add3(shoe, scale3(basis.forward, -height * 0.030));
+            let toe = add3(shoe, scale3(basis.forward, height * 0.064));
+            self.world_oriented_ellipsoid_with_surface_response(
+                heel,
+                axes,
+                [height * 0.026, height * 0.026, height * 0.014],
+                5,
+                10,
+                window_scale_color(boot, 0.72),
+                cloth_response,
+            );
+            self.world_oriented_ellipsoid_with_surface_response(
+                toe,
+                axes,
+                [height * 0.037, height * 0.040, height * 0.016],
+                5,
+                12,
+                boot,
+                cloth_response,
+            );
+            self.world_oriented_rect_with_surface_response(
+                add3(toe, scale3(basis.forward, height * 0.033)),
+                basis.right,
+                basis.up,
+                [height * 0.031, height * 0.0032],
+                boot_sole,
+                cloth_response,
+            );
+            for detail in 0..footwear_detail_count {
+                let salt = detail as u64;
+                let t = if footwear_detail_count <= 1 {
+                    0.0
+                } else {
+                    detail as f32 / (footwear_detail_count - 1) as f32
+                };
+                let forward_offset = height * (0.006 + t * 0.067);
+                let lateral = (window_stable_unit(seed, 33_101 + salt) - 0.5) * height * 0.010;
+                self.world_oriented_rect_with_surface_response(
+                    add3(
+                        shoe,
+                        add3(
+                            add3(
+                                scale3(basis.forward, forward_offset),
+                                scale3(basis.right, lateral),
+                            ),
+                            scale3(basis.up, height * 0.012),
+                        ),
+                    ),
+                    normalize3(add3(basis.right, scale3(basis.up, side * 0.12))),
+                    basis.up,
+                    [height * 0.018, height * 0.0013],
+                    if detail % 3 == 0 {
+                        boot_sole
+                    } else {
+                        cloth_edge
+                    },
+                    cloth_response,
+                );
+            }
+        }
+
+        let deformation_count = proxy.detail_profile.pose_deformation_zone_count.max(8) as usize;
+        for index in 0..deformation_count {
+            let side = if index % 2 == 0 { -1.0 } else { 1.0 };
+            let band = (index / 2) % 6;
+            let (vertical, lateral, forward_offset, width, use_skin) = match band {
+                0 => (0.738, side * 0.078, 0.082, 0.042, true),
+                1 => (0.572, side * 0.176, 0.076, 0.030, false),
+                2 => (0.448, side * 0.090, 0.078, 0.040, false),
+                3 => (0.286, side * 0.067, 0.088 + crouch * 0.040, 0.036, false),
+                4 => (
+                    0.392,
+                    side * 0.184,
+                    0.090 - side * locomotion * 0.022,
+                    0.024,
+                    true,
+                ),
+                _ => (0.180, side * 0.070, 0.082 + crouch * 0.028, 0.028, false),
+            };
+            self.world_oriented_rect_with_surface_response(
+                add3(
+                    [x, y, z + height * vertical],
+                    add3(
+                        scale3(basis.right, lateral * height),
+                        scale3(basis.forward, forward_offset * height),
+                    ),
+                ),
+                normalize3(add3(basis.right, scale3(basis.up, -side * 0.18))),
+                basis.up,
+                [height * width, height * 0.0021],
+                if use_skin { skin_shadow } else { crease },
+                if use_skin {
+                    skin_response
+                } else {
+                    cloth_response
+                },
+            );
         }
     }
 
@@ -12667,13 +14166,7 @@ impl WindowSceneGeometry {
 
         let [x, y] = instance.center_meters;
         let z = instance.z_meters;
-        let forward = horizontal_direction([
-            instance.viewer_position[0] - x,
-            instance.viewer_position[1] - y,
-            0.0,
-        ]);
-        let right = normalize3([forward[1], -forward[0], 0.0]);
-        let up = [0.0, 0.0, 1.0];
+        let (forward, right, up) = humanoid_instance_orientation_basis(&instance);
         let face_offset = (proxy.height_meters * 0.085).clamp(0.105, 0.17);
 
         for feature in &proxy.face_features {
@@ -12684,22 +14177,128 @@ impl WindowSceneGeometry {
                     scale3(right, feature.lateral_offset_meters),
                 ),
             );
-            self.world_oriented_rect_with_surface_response(
-                feature_center,
-                right,
-                up,
-                [feature.half_width_meters, feature.half_height_meters],
-                humanoid_face_feature_color(
-                    instance.color,
-                    *feature,
-                    instance.emotion,
-                    instance.surface_state.as_ref(),
-                ),
-                humanoid_face_feature_surface_response(
-                    feature.kind,
-                    instance.surface_state.as_ref(),
-                ),
+            let feature_color = humanoid_face_feature_color(
+                instance.color,
+                *feature,
+                instance.emotion,
+                instance.surface_state.as_ref(),
             );
+            let feature_surface_response = humanoid_face_feature_surface_response(
+                feature.kind,
+                instance.surface_state.as_ref(),
+            );
+
+            match feature.kind {
+                HumanProxyFaceFeatureKind::LeftEye
+                | HumanProxyFaceFeatureKind::RightEye
+                | HumanProxyFaceFeatureKind::Mouth => {
+                    self.world_oriented_rect_with_surface_response(
+                        feature_center,
+                        right,
+                        up,
+                        [feature.half_width_meters, feature.half_height_meters],
+                        feature_color,
+                        feature_surface_response,
+                    );
+                }
+                HumanProxyFaceFeatureKind::NoseBridge => {
+                    self.world_cylinder_between_with_surface_response(
+                        add3(
+                            feature_center,
+                            scale3(up, feature.half_height_meters * 0.72),
+                        ),
+                        add3(
+                            add3(feature_center, scale3(forward, proxy.height_meters * 0.018)),
+                            scale3(up, -feature.half_height_meters * 0.82),
+                        ),
+                        feature.half_width_meters.max(proxy.height_meters * 0.004),
+                        8,
+                        feature_color,
+                        feature_surface_response,
+                    );
+                }
+                HumanProxyFaceFeatureKind::NoseTip => {
+                    self.world_ellipsoid_with_surface_response(
+                        add3(feature_center, scale3(forward, proxy.height_meters * 0.020)),
+                        [
+                            feature.half_width_meters,
+                            proxy.height_meters * 0.009,
+                            feature.half_height_meters,
+                        ],
+                        6,
+                        12,
+                        feature_color,
+                        feature_surface_response,
+                    );
+                }
+                HumanProxyFaceFeatureKind::LeftCheek | HumanProxyFaceFeatureKind::RightCheek => {
+                    self.world_ellipsoid_with_surface_response(
+                        add3(feature_center, scale3(forward, proxy.height_meters * 0.006)),
+                        [
+                            feature.half_width_meters,
+                            proxy.height_meters * 0.011,
+                            feature.half_height_meters,
+                        ],
+                        5,
+                        10,
+                        feature_color,
+                        feature_surface_response,
+                    );
+                }
+                HumanProxyFaceFeatureKind::LeftBrow | HumanProxyFaceFeatureKind::RightBrow => {
+                    let side = if feature.kind == HumanProxyFaceFeatureKind::LeftBrow {
+                        -1.0
+                    } else {
+                        1.0
+                    };
+                    self.world_oriented_rect_with_surface_response(
+                        feature_center,
+                        normalize3(add3(right, scale3(up, side * 0.10))),
+                        up,
+                        [feature.half_width_meters, feature.half_height_meters],
+                        feature_color,
+                        feature_surface_response,
+                    );
+                }
+                HumanProxyFaceFeatureKind::LeftEar | HumanProxyFaceFeatureKind::RightEar => {
+                    self.world_ellipsoid_with_surface_response(
+                        add3(feature_center, scale3(forward, -face_offset * 0.42)),
+                        [
+                            feature.half_width_meters,
+                            proxy.height_meters * 0.0065,
+                            feature.half_height_meters,
+                        ],
+                        5,
+                        10,
+                        feature_color,
+                        feature_surface_response,
+                    );
+                }
+                HumanProxyFaceFeatureKind::Chin => {
+                    self.world_ellipsoid_with_surface_response(
+                        add3(feature_center, scale3(forward, proxy.height_meters * 0.010)),
+                        [
+                            feature.half_width_meters,
+                            proxy.height_meters * 0.012,
+                            feature.half_height_meters,
+                        ],
+                        5,
+                        10,
+                        feature_color,
+                        feature_surface_response,
+                    );
+                }
+                HumanProxyFaceFeatureKind::JawShadow => {
+                    self.world_oriented_rect_with_surface_response(
+                        feature_center,
+                        right,
+                        up,
+                        [feature.half_width_meters, feature.half_height_meters],
+                        feature_color,
+                        feature_surface_response,
+                    );
+                }
+            }
         }
 
         if proxy.quality_tier >= QualityTier::NormalRuntime {
@@ -12928,6 +14527,99 @@ impl WindowSceneGeometry {
                     WindowSceneVertex::world_with_surface_detail_and_cache(
                         p3,
                         ellipsoid_normal(radii, theta0, phi1),
+                        color,
+                        surface_response,
+                        material_detail,
+                        generated_cache,
+                    ),
+                ]);
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn world_oriented_ellipsoid_with_surface_response(
+        &mut self,
+        center: [f32; 3],
+        axes: [[f32; 3]; 3],
+        radii: [f32; 3],
+        latitude_segments: usize,
+        longitude_segments: usize,
+        color: [f32; 4],
+        surface_response: [f32; 4],
+    ) {
+        if radii
+            .iter()
+            .any(|radius| !radius.is_finite() || *radius <= f32::EPSILON)
+        {
+            return;
+        }
+
+        let axes = [
+            normalize3(axes[0]),
+            normalize3(axes[1]),
+            normalize3(axes[2]),
+        ];
+        if axes.iter().any(|axis| dot3(*axis, *axis) <= f32::EPSILON) {
+            return;
+        }
+
+        let latitude_segments = latitude_segments.max(3);
+        let longitude_segments = longitude_segments.max(4);
+        let latitude_step = std::f32::consts::PI / latitude_segments as f32;
+        let longitude_step = std::f32::consts::TAU / longitude_segments as f32;
+
+        for latitude in 0..latitude_segments {
+            let theta0 = -std::f32::consts::FRAC_PI_2 + latitude as f32 * latitude_step;
+            let theta1 = theta0 + latitude_step;
+
+            for longitude in 0..longitude_segments {
+                let phi0 = longitude as f32 * longitude_step;
+                let phi1 = phi0 + longitude_step;
+                let p0 = oriented_ellipsoid_point(center, axes, radii, theta0, phi0);
+                let p1 = oriented_ellipsoid_point(center, axes, radii, theta1, phi0);
+                let p2 = oriented_ellipsoid_point(center, axes, radii, theta1, phi1);
+                let p3 = oriented_ellipsoid_point(center, axes, radii, theta0, phi1);
+                let material_detail =
+                    window_surface_detail_for_quad(p0, p1, p2, p3, color, surface_response);
+                let generated_cache = window_generated_surface_cache_for_quad(
+                    p0,
+                    p1,
+                    p2,
+                    p3,
+                    color,
+                    surface_response,
+                    material_detail,
+                );
+
+                self.push_indexed_quad([
+                    WindowSceneVertex::world_with_surface_detail_and_cache(
+                        p0,
+                        oriented_ellipsoid_normal(axes, radii, theta0, phi0),
+                        color,
+                        surface_response,
+                        material_detail,
+                        generated_cache,
+                    ),
+                    WindowSceneVertex::world_with_surface_detail_and_cache(
+                        p1,
+                        oriented_ellipsoid_normal(axes, radii, theta1, phi0),
+                        color,
+                        surface_response,
+                        material_detail,
+                        generated_cache,
+                    ),
+                    WindowSceneVertex::world_with_surface_detail_and_cache(
+                        p2,
+                        oriented_ellipsoid_normal(axes, radii, theta1, phi1),
+                        color,
+                        surface_response,
+                        material_detail,
+                        generated_cache,
+                    ),
+                    WindowSceneVertex::world_with_surface_detail_and_cache(
+                        p3,
+                        oriented_ellipsoid_normal(axes, radii, theta0, phi1),
                         color,
                         surface_response,
                         material_detail,
@@ -13807,18 +15499,164 @@ fn ellipsoid_normal(radii: [f32; 3], theta: f32, phi: f32) -> [f32; 3] {
     ])
 }
 
+fn oriented_ellipsoid_point(
+    center: [f32; 3],
+    axes: [[f32; 3]; 3],
+    radii: [f32; 3],
+    theta: f32,
+    phi: f32,
+) -> [f32; 3] {
+    let theta_cos = theta.cos();
+    add3(
+        center,
+        add3(
+            add3(
+                scale3(axes[0], radii[0] * theta_cos * phi.cos()),
+                scale3(axes[1], radii[1] * theta_cos * phi.sin()),
+            ),
+            scale3(axes[2], radii[2] * theta.sin()),
+        ),
+    )
+}
+
+fn oriented_ellipsoid_normal(
+    axes: [[f32; 3]; 3],
+    radii: [f32; 3],
+    theta: f32,
+    phi: f32,
+) -> [f32; 3] {
+    let theta_cos = theta.cos();
+    normalize3(add3(
+        add3(
+            scale3(axes[0], theta_cos * phi.cos() / radii[0]),
+            scale3(axes[1], theta_cos * phi.sin() / radii[1]),
+        ),
+        scale3(axes[2], theta.sin() / radii[2]),
+    ))
+}
+
 fn humanoid_body_part_surface_response(
     part: HumanProxyPart,
     surface_state: Option<&HumanSurfaceState>,
 ) -> [f32; 4] {
     match part {
-        HumanProxyPart::Head | HumanProxyPart::LeftArm | HumanProxyPart::RightArm => {
-            humanoid_skin_surface_response(surface_state)
-        }
-        HumanProxyPart::Torso | HumanProxyPart::LeftLeg | HumanProxyPart::RightLeg => {
-            humanoid_clothing_surface_response(surface_state)
-        }
+        HumanProxyPart::Head
+        | HumanProxyPart::Neck
+        | HumanProxyPart::LeftArm
+        | HumanProxyPart::RightArm
+        | HumanProxyPart::LeftForearm
+        | HumanProxyPart::RightForearm
+        | HumanProxyPart::LeftHand
+        | HumanProxyPart::RightHand => humanoid_skin_surface_response(surface_state),
+        HumanProxyPart::HairCap => humanoid_hair_surface_response(surface_state),
+        HumanProxyPart::Torso
+        | HumanProxyPart::Pelvis
+        | HumanProxyPart::Abdomen
+        | HumanProxyPart::Chest
+        | HumanProxyPart::LeftLeg
+        | HumanProxyPart::RightLeg
+        | HumanProxyPart::LeftUpperArm
+        | HumanProxyPart::RightUpperArm
+        | HumanProxyPart::LeftThigh
+        | HumanProxyPart::RightThigh
+        | HumanProxyPart::LeftCalf
+        | HumanProxyPart::RightCalf
+        | HumanProxyPart::LeftFoot
+        | HumanProxyPart::RightFoot => humanoid_clothing_surface_response(surface_state),
         HumanProxyPart::Impostor => WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH,
+    }
+}
+
+fn humanoid_part_is_skin(part: HumanProxyPart) -> bool {
+    matches!(
+        part,
+        HumanProxyPart::Head
+            | HumanProxyPart::Neck
+            | HumanProxyPart::LeftArm
+            | HumanProxyPart::RightArm
+            | HumanProxyPart::LeftForearm
+            | HumanProxyPart::RightForearm
+            | HumanProxyPart::LeftHand
+            | HumanProxyPart::RightHand
+    )
+}
+
+fn humanoid_part_is_hair(part: HumanProxyPart) -> bool {
+    matches!(part, HumanProxyPart::HairCap)
+}
+
+fn humanoid_part_is_arm_or_hand(part: HumanProxyPart) -> bool {
+    matches!(
+        part,
+        HumanProxyPart::LeftArm
+            | HumanProxyPart::RightArm
+            | HumanProxyPart::LeftUpperArm
+            | HumanProxyPart::RightUpperArm
+            | HumanProxyPart::LeftForearm
+            | HumanProxyPart::RightForearm
+            | HumanProxyPart::LeftHand
+            | HumanProxyPart::RightHand
+    )
+}
+
+fn humanoid_part_is_foot(part: HumanProxyPart) -> bool {
+    matches!(part, HumanProxyPart::LeftFoot | HumanProxyPart::RightFoot)
+}
+
+fn humanoid_part_is_clothing(part: HumanProxyPart) -> bool {
+    !humanoid_part_is_skin(part) && !humanoid_part_is_hair(part) && part != HumanProxyPart::Impostor
+}
+
+fn humanoid_part_surface_for_color(
+    part: HumanProxyPart,
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> [f32; 4] {
+    if humanoid_part_is_skin(part) {
+        humanoid_default_skin_color(color)
+    } else if humanoid_part_is_hair(part) {
+        humanoid_hair_color(color, surface_state)
+    } else if humanoid_part_is_foot(part) {
+        humanoid_boot_color(color)
+    } else {
+        humanoid_default_clothing_color(color)
+    }
+}
+
+fn humanoid_part_state_color(
+    part: HumanProxyPart,
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> [f32; 4] {
+    let base = humanoid_part_surface_for_color(part, color, surface_state);
+    let Some(surface) = surface_state else {
+        return base;
+    };
+
+    if humanoid_part_is_skin(part) {
+        humanoid_skin_state_color(base, surface)
+    } else if humanoid_part_is_clothing(part) {
+        humanoid_clothing_state_color(base, surface)
+    } else {
+        base
+    }
+}
+
+fn humanoid_skin_or_cloth_extremity_color(
+    part: HumanProxyPart,
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> ([f32; 4], [f32; 4]) {
+    if humanoid_part_is_arm_or_hand(part) {
+        (
+            humanoid_default_skin_color(color),
+            humanoid_skin_surface_response(surface_state),
+        )
+    } else {
+        (
+            humanoid_boot_color(color),
+            humanoid_clothing_surface_response(surface_state),
+        )
     }
 }
 
@@ -13830,7 +15668,18 @@ fn humanoid_face_feature_surface_response(
         HumanProxyFaceFeatureKind::LeftEye | HumanProxyFaceFeatureKind::RightEye => {
             humanoid_eye_surface_response(surface_state)
         }
-        HumanProxyFaceFeatureKind::Mouth => humanoid_skin_surface_response(surface_state),
+        HumanProxyFaceFeatureKind::LeftBrow | HumanProxyFaceFeatureKind::RightBrow => {
+            humanoid_hair_surface_response(surface_state)
+        }
+        HumanProxyFaceFeatureKind::Mouth
+        | HumanProxyFaceFeatureKind::NoseBridge
+        | HumanProxyFaceFeatureKind::NoseTip
+        | HumanProxyFaceFeatureKind::LeftCheek
+        | HumanProxyFaceFeatureKind::RightCheek
+        | HumanProxyFaceFeatureKind::LeftEar
+        | HumanProxyFaceFeatureKind::RightEar
+        | HumanProxyFaceFeatureKind::Chin
+        | HumanProxyFaceFeatureKind::JawShadow => humanoid_skin_surface_response(surface_state),
     }
 }
 
@@ -13928,29 +15777,10 @@ fn humanoid_part_color(
     part: HumanProxyPart,
     surface_state: Option<&HumanSurfaceState>,
 ) -> [f32; 4] {
-    let color = match part {
-        HumanProxyPart::Head | HumanProxyPart::LeftArm | HumanProxyPart::RightArm => {
-            humanoid_default_skin_color(color)
-        }
-        HumanProxyPart::LeftLeg | HumanProxyPart::RightLeg => {
-            humanoid_default_clothing_color(color)
-        }
-        HumanProxyPart::Torso => humanoid_default_clothing_color(color),
-        HumanProxyPart::Impostor => color,
-    };
-
-    let Some(surface) = surface_state else {
-        return color;
-    };
-
-    match part {
-        HumanProxyPart::Head | HumanProxyPart::LeftArm | HumanProxyPart::RightArm => {
-            humanoid_skin_state_color(color, surface)
-        }
-        HumanProxyPart::Torso | HumanProxyPart::LeftLeg | HumanProxyPart::RightLeg => {
-            humanoid_clothing_state_color(color, surface)
-        }
-        HumanProxyPart::Impostor => color,
+    if part == HumanProxyPart::Impostor {
+        color
+    } else {
+        humanoid_part_state_color(part, color, surface_state)
     }
 }
 
@@ -14004,6 +15834,23 @@ fn humanoid_hair_color(color: [f32; 4], surface_state: Option<&HumanSurfaceState
     ])
 }
 
+fn humanoid_hairline_shadow_color(
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> [f32; 4] {
+    let hair = humanoid_hair_color(color, surface_state);
+    let wetness = surface_state
+        .map(|surface| surface.hair_wetness)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    window_clamp_color([
+        hair[0] * (0.46 - wetness * 0.08),
+        hair[1] * (0.48 - wetness * 0.06),
+        hair[2] * (0.54 + wetness * 0.10),
+        0.82,
+    ])
+}
+
 fn humanoid_clothing_color(color: [f32; 4]) -> [f32; 4] {
     window_clamp_color([
         color[0] * 0.08 + 0.028,
@@ -14011,6 +15858,70 @@ fn humanoid_clothing_color(color: [f32; 4]) -> [f32; 4] {
         color[2] * 0.16 + 0.052,
         color[3],
     ])
+}
+
+fn humanoid_clothing_inner_layer_color(
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> [f32; 4] {
+    let wetness = surface_state
+        .map(|surface| surface.clothing_wetness)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    let damage = surface_state
+        .map(|surface| surface.clothing_damage)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    window_clamp_color([
+        color[0] * 0.11 + 0.055 - wetness * 0.018 + damage * 0.018,
+        color[1] * 0.13 + 0.052 - wetness * 0.012,
+        color[2] * 0.19 + 0.075 + wetness * 0.028,
+        0.88,
+    ])
+}
+
+fn humanoid_limb_volume_color(
+    part: HumanProxyPart,
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> [f32; 4] {
+    if humanoid_part_is_skin(part) {
+        window_mix_color(
+            humanoid_default_skin_color(color),
+            humanoid_skin_warm_highlight_color(color, surface_state),
+            0.34,
+        )
+    } else {
+        window_mix_color(
+            humanoid_clothing_color(color),
+            humanoid_clothing_fold_shadow_color(color, surface_state),
+            0.24,
+        )
+    }
+}
+
+fn humanoid_limb_shadow_color(
+    part: HumanProxyPart,
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> [f32; 4] {
+    if humanoid_part_is_skin(part) {
+        humanoid_skin_cool_shadow_color(color, surface_state)
+    } else {
+        window_scale_color(humanoid_clothing_crease_color(color, surface_state), 0.78)
+    }
+}
+
+fn humanoid_limb_highlight_color(
+    part: HumanProxyPart,
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> [f32; 4] {
+    if humanoid_part_is_skin(part) {
+        humanoid_skin_warm_highlight_color(color, surface_state)
+    } else {
+        window_scale_color(humanoid_clothing_color(color), 1.22)
+    }
 }
 
 fn humanoid_boot_color(color: [f32; 4]) -> [f32; 4] {
@@ -14140,6 +16051,27 @@ fn humanoid_skin_soft_shadow_color(
         color[1] * 0.58 - dirt * 0.028,
         color[2] * 0.52 + bruise * 0.035,
         0.72,
+    ])
+}
+
+fn humanoid_skin_cool_shadow_color(
+    color: [f32; 4],
+    surface_state: Option<&HumanSurfaceState>,
+) -> [f32; 4] {
+    let color = humanoid_default_skin_color(color);
+    let wetness = surface_state
+        .map(|surface| surface.skin_wetness + surface.sweat_sheen * 0.35)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    let bruise = surface_state
+        .map(|surface| surface.bruising)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+    window_clamp_color([
+        color[0] * 0.56 + wetness * 0.018 + bruise * 0.035,
+        color[1] * 0.50 + wetness * 0.018,
+        color[2] * 0.56 + wetness * 0.050 + bruise * 0.052,
+        0.66,
     ])
 }
 
@@ -14406,6 +16338,32 @@ fn humanoid_face_feature_color(
             [0.18, 0.052, 0.048, 1.0],
             0.62,
         ),
+        HumanProxyFaceFeatureKind::NoseBridge | HumanProxyFaceFeatureKind::NoseTip => {
+            window_scale_color(humanoid_default_skin_color(color), 1.08)
+        }
+        HumanProxyFaceFeatureKind::LeftCheek | HumanProxyFaceFeatureKind::RightCheek => {
+            window_mix_color(
+                humanoid_default_skin_color(color),
+                humanoid_skin_warm_highlight_color(color, surface_state),
+                0.62,
+            )
+        }
+        HumanProxyFaceFeatureKind::LeftBrow | HumanProxyFaceFeatureKind::RightBrow => {
+            window_scale_color(humanoid_hair_color(color, surface_state), 0.72)
+        }
+        HumanProxyFaceFeatureKind::LeftEar | HumanProxyFaceFeatureKind::RightEar => {
+            window_mix_color(
+                humanoid_default_skin_color(color),
+                humanoid_skin_soft_shadow_color(color, surface_state),
+                0.45,
+            )
+        }
+        HumanProxyFaceFeatureKind::Chin => {
+            window_scale_color(humanoid_default_skin_color(color), 0.93)
+        }
+        HumanProxyFaceFeatureKind::JawShadow => {
+            humanoid_skin_soft_shadow_color(color, surface_state)
+        }
     }
 }
 
@@ -19035,7 +20993,28 @@ mod tests {
             )
         );
 
-        assert!(geometry.vertices.len() > 500);
+        let normal_proxy = human_proxy_geometry_for_quality(QualityTier::NormalRuntime);
+        assert_eq!(normal_proxy.body_parts.len(), 18);
+        assert!(
+            normal_proxy
+                .body_parts
+                .iter()
+                .any(|part| part.part == HumanProxyPart::LeftHand)
+        );
+        assert!(
+            normal_proxy
+                .body_parts
+                .iter()
+                .any(|part| part.part == HumanProxyPart::RightFoot)
+        );
+        assert!(
+            !normal_proxy
+                .body_parts
+                .iter()
+                .any(|part| part.part == HumanProxyPart::Torso)
+        );
+
+        assert!(geometry.vertices.len() > 1_200);
         assert_eq!(geometry.vertices.len() % 4, 0);
         assert_eq!(geometry.indices.len(), geometry.vertices.len() / 4 * 6);
         assert!(geometry.vertices.iter().any(|vertex| {
@@ -19096,6 +21075,75 @@ mod tests {
     }
 
     #[test]
+    fn window_background_humanoid_lod_stays_human_shaped_instead_of_box_impostor() {
+        let mut geometry = WindowSceneGeometry::default();
+        let human = HumanState {
+            human_id: 404,
+            quality_tier: QualityTier::BackgroundApproximation,
+        };
+        let color = [0.62, 0.48, 0.36, 1.0];
+
+        geometry.add_humanoid_proxy(
+            WindowHumanoidProxyInstance::new([1.25, -0.75], 0.0, color)
+                .with_human(Some(&human))
+                .with_facing_yaw_radians(0.35),
+        );
+
+        let proxy = human_proxy_geometry_for_state(&human);
+        assert_eq!(proxy.quality_tier, QualityTier::BackgroundApproximation);
+        assert_eq!(proxy.body_parts.len(), 18);
+        assert!(proxy.face_features.is_empty());
+        assert!(!proxy.detail_profile.supports_photoreal_near_proxy());
+        assert!(
+            !proxy
+                .body_parts
+                .iter()
+                .any(|part| part.part == HumanProxyPart::Impostor)
+        );
+        for expected in [
+            HumanProxyPart::LeftFoot,
+            HumanProxyPart::RightFoot,
+            HumanProxyPart::Pelvis,
+            HumanProxyPart::Chest,
+            HumanProxyPart::LeftHand,
+            HumanProxyPart::RightHand,
+            HumanProxyPart::Head,
+            HumanProxyPart::HairCap,
+        ] {
+            assert!(
+                proxy.body_parts.iter().any(|part| part.part == expected),
+                "{expected:?} should remain in the background human silhouette"
+            );
+        }
+
+        let old_box_impostor_vertex_count = 6 * 4;
+        assert!(
+            geometry.vertices.len() > old_box_impostor_vertex_count * 20,
+            "background humans should render as a body silhouette, not one box"
+        );
+        assert_eq!(geometry.vertices.len() % 4, 0);
+        assert_eq!(geometry.indices.len(), geometry.vertices.len() / 4 * 6);
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_SKIN
+                && vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_HAIR
+                && vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH
+                && vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
+        }));
+        assert!(
+            geometry
+                .vertices
+                .iter()
+                .any(|vertex| vertex.position[2] > proxy.height_meters * 0.90)
+        );
+    }
+
+    #[test]
     fn window_humanoid_proxy_uses_human_lod_and_emotion_for_faces() {
         let mut geometry = WindowSceneGeometry::default();
         let human = HumanState {
@@ -19112,8 +21160,42 @@ mod tests {
                 .with_viewer_position([0.0, 0.0, 1.65]),
         );
 
+        let proxy = human_proxy_geometry_for_state(&human);
+        assert!(proxy.detail_profile.supports_photoreal_near_proxy());
+        assert!(proxy.detail_profile.face_anatomy_feature_count >= 12);
+        assert!(proxy.detail_profile.anatomical_joint_count >= 18);
+        assert!(proxy.detail_profile.pose_deformation_zone_count >= 8);
+        assert!(proxy.detail_profile.garment_layer_count >= 3);
+        assert!(proxy.detail_profile.footwear_detail_count >= 6);
+        assert!(proxy.detail_profile.hairline_detail_count >= 12);
+        assert!(proxy.detail_profile.limb_volume_layer_count >= 12);
+        assert!(proxy.detail_profile.soft_tissue_form_count >= 8);
+        for expected in [
+            HumanProxyFaceFeatureKind::NoseBridge,
+            HumanProxyFaceFeatureKind::NoseTip,
+            HumanProxyFaceFeatureKind::LeftCheek,
+            HumanProxyFaceFeatureKind::RightCheek,
+            HumanProxyFaceFeatureKind::LeftBrow,
+            HumanProxyFaceFeatureKind::RightBrow,
+            HumanProxyFaceFeatureKind::LeftEar,
+            HumanProxyFaceFeatureKind::RightEar,
+            HumanProxyFaceFeatureKind::Chin,
+            HumanProxyFaceFeatureKind::JawShadow,
+        ] {
+            assert!(
+                proxy
+                    .face_features
+                    .iter()
+                    .any(|feature| feature.kind == expected),
+                "{expected:?} should be present in the hero face proxy"
+            );
+        }
         let old_box_proxy_vertex_count = 6 * 6 * 4 + 3 * 4;
         assert!(geometry.vertices.len() > old_box_proxy_vertex_count);
+        assert!(
+            geometry.vertices.len() > 3_000,
+            "hero humanoid proxy should emit dense layered photoreal geometry"
+        );
         assert_eq!(geometry.vertices.len() % 4, 0);
         assert_eq!(geometry.indices.len(), geometry.vertices.len() / 4 * 6);
         assert!(geometry.vertices.iter().all(|vertex| {
@@ -19149,6 +21231,38 @@ mod tests {
                 .iter()
                 .any(|vertex| vertex.color == humanoid_trim_color())
         );
+        let nose_tip = proxy
+            .face_features
+            .iter()
+            .find(|feature| feature.kind == HumanProxyFaceFeatureKind::NoseTip)
+            .copied()
+            .expect("hero proxy should include a nose tip");
+        let cheek = proxy
+            .face_features
+            .iter()
+            .find(|feature| feature.kind == HumanProxyFaceFeatureKind::LeftCheek)
+            .copied()
+            .expect("hero proxy should include cheeks");
+        let brow = proxy
+            .face_features
+            .iter()
+            .find(|feature| feature.kind == HumanProxyFaceFeatureKind::LeftBrow)
+            .copied()
+            .expect("hero proxy should include brows");
+        for expected_color in [
+            humanoid_face_feature_color(color, nose_tip, Some(&emotion), None),
+            humanoid_face_feature_color(color, cheek, Some(&emotion), None),
+            humanoid_face_feature_color(color, brow, Some(&emotion), None),
+            humanoid_boot_sole_color(color, None),
+        ] {
+            assert!(
+                geometry
+                    .vertices
+                    .iter()
+                    .any(|vertex| vertex.color == expected_color),
+                "{expected_color:?} should be emitted by refined hero human geometry"
+            );
+        }
 
         let alert =
             (emotion.fear * 0.45 + emotion.anger * 0.2 + emotion.urgency * 0.35).clamp(0.0, 1.0);
@@ -19186,6 +21300,24 @@ mod tests {
                 .iter()
                 .any(|vertex| vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_CYBERNETIC)
         );
+        let skin_vertex_count = geometry
+            .vertices
+            .iter()
+            .filter(|vertex| vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_SKIN)
+            .count();
+        let hair_vertex_count = geometry
+            .vertices
+            .iter()
+            .filter(|vertex| vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_HAIR)
+            .count();
+        let cloth_vertex_count = geometry
+            .vertices
+            .iter()
+            .filter(|vertex| vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH)
+            .count();
+        assert!(skin_vertex_count > 450);
+        assert!(hair_vertex_count > proxy.detail_profile.hair_card_count as usize * 4);
+        assert!(cloth_vertex_count > 450);
         assert!(geometry.vertices.iter().any(|vertex| {
             vertex.color == humanoid_eye_tearline_color(None)
                 && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_EYE
@@ -19202,8 +21334,137 @@ mod tests {
             vertex.color == humanoid_inner_mouth_color(color, None)
                 && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_SKIN
         }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_limb_volume_color(HumanProxyPart::LeftForearm, color, None)
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_SKIN
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_limb_volume_color(HumanProxyPart::LeftThigh, color, None)
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_limb_shadow_color(HumanProxyPart::LeftCalf, color, None)
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_skin_cool_shadow_color(color, None)
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_SKIN
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_clothing_inner_layer_color(color, None)
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH
+        }));
+        assert!(geometry.vertices.iter().any(|vertex| {
+            vertex.color == humanoid_hairline_shadow_color(color, None)
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_HUMAN_HAIR
+        }));
         assert!(humanoid_trim_color()[1] < 0.7);
         assert!(humanoid_trim_color()[3] < 0.7);
+    }
+
+    #[test]
+    fn window_humanoid_proxy_uses_explicit_facing_for_body_orientation() {
+        let human = HumanState {
+            human_id: 301,
+            quality_tier: QualityTier::HeroHighFidelityRuntime,
+        };
+        let color = [0.80, 0.62, 0.46, 1.0];
+
+        let mut facing_x = WindowSceneGeometry::default();
+        facing_x.add_humanoid_proxy(
+            WindowHumanoidProxyInstance::new([0.0, 0.0], 0.0, color)
+                .with_human(Some(&human))
+                .with_viewer_position([0.0, -3.0, 1.65])
+                .with_facing_yaw_radians(0.0),
+        );
+        let mut facing_y = WindowSceneGeometry::default();
+        facing_y.add_humanoid_proxy(
+            WindowHumanoidProxyInstance::new([0.0, 0.0], 0.0, color)
+                .with_human(Some(&human))
+                .with_viewer_position([0.0, -3.0, 1.65])
+                .with_facing_yaw_radians(std::f32::consts::FRAC_PI_2),
+        );
+
+        let world_span = |geometry: &WindowSceneGeometry| {
+            let mut min = [f32::INFINITY; 2];
+            let mut max = [f32::NEG_INFINITY; 2];
+            for vertex in geometry
+                .vertices
+                .iter()
+                .filter(|vertex| vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE)
+            {
+                min[0] = min[0].min(vertex.position[0]);
+                min[1] = min[1].min(vertex.position[1]);
+                max[0] = max[0].max(vertex.position[0]);
+                max[1] = max[1].max(vertex.position[1]);
+            }
+            [max[0] - min[0], max[1] - min[1]]
+        };
+        let x_span = world_span(&facing_x);
+        let y_span = world_span(&facing_y);
+
+        assert!(
+            x_span[1] > x_span[0] * 1.04,
+            "facing +X should rotate shoulder/body width onto world Y: {x_span:?}"
+        );
+        assert!(
+            y_span[0] > y_span[1] * 1.04,
+            "facing +Y should rotate shoulder/body width onto world X: {y_span:?}"
+        );
+    }
+
+    #[test]
+    fn window_humanoid_proxy_uses_pose_weights_for_non_rigid_limbs() {
+        let human = HumanState {
+            human_id: 302,
+            quality_tier: QualityTier::HeroHighFidelityRuntime,
+        };
+        let color = [0.82, 0.62, 0.48, 1.0];
+
+        let mut idle = WindowSceneGeometry::default();
+        idle.add_humanoid_proxy(
+            WindowHumanoidProxyInstance::new([0.0, 0.0], 0.0, color)
+                .with_human(Some(&human))
+                .with_facing_yaw_radians(0.0),
+        );
+        let mut moving = WindowSceneGeometry::default();
+        moving.add_humanoid_proxy(
+            WindowHumanoidProxyInstance::new([0.0, 0.0], 0.0, color)
+                .with_human(Some(&human))
+                .with_facing_yaw_radians(0.0)
+                .with_pose_weights(1.0, 0.0),
+        );
+        let mut crouched = WindowSceneGeometry::default();
+        crouched.add_humanoid_proxy(
+            WindowHumanoidProxyInstance::new([0.0, 0.0], 0.0, color)
+                .with_human(Some(&human))
+                .with_facing_yaw_radians(0.0)
+                .with_pose_weights(0.0, 1.0),
+        );
+
+        assert_eq!(idle.vertices.len(), moving.vertices.len());
+        assert_eq!(idle.vertices.len(), crouched.vertices.len());
+        let position_delta = |left: &WindowSceneGeometry, right: &WindowSceneGeometry| {
+            left.vertices
+                .iter()
+                .zip(right.vertices.iter())
+                .map(|(left, right)| {
+                    (left.position[0] - right.position[0]).abs()
+                        + (left.position[1] - right.position[1]).abs()
+                        + (left.position[2] - right.position[2]).abs()
+                })
+                .sum::<f32>()
+        };
+        let moving_delta = position_delta(&idle, &moving);
+        let crouched_delta = position_delta(&idle, &crouched);
+        assert!(
+            moving_delta > 0.5,
+            "locomotion should swing limbs instead of reusing idle rods: delta={moving_delta}"
+        );
+        assert!(
+            crouched_delta > 0.5,
+            "crouch should push knees forward instead of reusing idle rods: delta={crouched_delta}"
+        );
     }
 
     #[test]

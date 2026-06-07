@@ -2274,6 +2274,23 @@ pub enum HumanProxyPart {
     LeftArm,
     RightArm,
     Head,
+    LeftThigh,
+    RightThigh,
+    LeftCalf,
+    RightCalf,
+    LeftFoot,
+    RightFoot,
+    Pelvis,
+    Abdomen,
+    Chest,
+    Neck,
+    LeftUpperArm,
+    RightUpperArm,
+    LeftForearm,
+    RightForearm,
+    LeftHand,
+    RightHand,
+    HairCap,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2288,6 +2305,16 @@ pub enum HumanProxyFaceFeatureKind {
     LeftEye,
     RightEye,
     Mouth,
+    NoseBridge,
+    NoseTip,
+    LeftCheek,
+    RightCheek,
+    LeftBrow,
+    RightBrow,
+    LeftEar,
+    RightEar,
+    Chin,
+    JawShadow,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2305,6 +2332,64 @@ pub struct HumanProxyGeometry {
     pub height_meters: f32,
     pub body_parts: Vec<HumanProxyBox>,
     pub face_features: Vec<HumanProxyFaceFeature>,
+    pub detail_profile: HumanProxyDetailProfile,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HumanProxyDetailProfile {
+    pub silhouette_segments: u16,
+    pub face_anatomy_feature_count: u8,
+    pub skin_microdetail_points: u16,
+    pub wrinkle_line_count: u8,
+    pub eye_layer_count: u8,
+    pub eyelash_card_count: u8,
+    pub eyebrow_card_count: u8,
+    pub hair_card_count: u16,
+    pub clothing_fold_count: u8,
+    pub clothing_stitch_count: u8,
+    pub visible_finger_count: u8,
+    pub mouth_layer_count: u8,
+    pub cybernetic_detail_count: u8,
+    pub anatomical_joint_count: u8,
+    pub pose_deformation_zone_count: u8,
+    pub garment_layer_count: u8,
+    pub footwear_detail_count: u8,
+    pub hairline_detail_count: u8,
+    pub limb_volume_layer_count: u8,
+    pub soft_tissue_form_count: u8,
+    pub has_teeth_tongue: bool,
+    pub has_tearline: bool,
+    pub has_cloth_weave: bool,
+    pub has_facial_shadowing: bool,
+}
+
+impl HumanProxyDetailProfile {
+    pub fn supports_photoreal_near_proxy(&self) -> bool {
+        self.silhouette_segments >= 32
+            && self.face_anatomy_feature_count >= 12
+            && self.skin_microdetail_points >= 64
+            && self.wrinkle_line_count >= 8
+            && self.eye_layer_count >= 4
+            && self.eyelash_card_count >= 8
+            && self.eyebrow_card_count >= 6
+            && self.hair_card_count >= 48
+            && self.clothing_fold_count >= 16
+            && self.clothing_stitch_count >= 12
+            && self.visible_finger_count >= 10
+            && self.mouth_layer_count >= 4
+            && self.cybernetic_detail_count >= 2
+            && self.anatomical_joint_count >= 18
+            && self.pose_deformation_zone_count >= 8
+            && self.garment_layer_count >= 3
+            && self.footwear_detail_count >= 6
+            && self.hairline_detail_count >= 12
+            && self.limb_volume_layer_count >= 12
+            && self.soft_tissue_form_count >= 8
+            && self.has_teeth_tongue
+            && self.has_tearline
+            && self.has_cloth_weave
+            && self.has_facial_shadowing
+    }
 }
 
 pub fn human_proxy_geometry_for_state(human: &HumanState) -> HumanProxyGeometry {
@@ -5967,20 +6052,14 @@ fn build_human_proxy_geometry(
 
     let body_parts = match quality_tier {
         QualityTier::Disabled => Vec::new(),
-        QualityTier::BackgroundApproximation => vec![HumanProxyBox {
-            part: HumanProxyPart::Impostor,
-            local_min_meters: Vec3::new(-shoulder_half, -body_depth, 0.0),
-            local_max_meters: Vec3::new(shoulder_half, body_depth, height * 0.92),
-        }],
-        QualityTier::NormalRuntime
+        QualityTier::BackgroundApproximation
+        | QualityTier::NormalRuntime
         | QualityTier::HeroHighFidelityRuntime
         | QualityTier::ReferenceOfflineValidation => {
             let leg_gap = (hip_half * 0.25).max(0.035);
             let leg_half_width = ((hip_half - leg_gap) * 0.5).max(0.055);
             let leg_top = height * 0.46;
-            let torso_bottom = height * 0.42;
             let torso_top = height * 0.76;
-            let arm_bottom = height * 0.46;
             let arm_top = height * 0.73;
             let arm_half_width = (shoulder_half * 0.24).max(0.055);
             let head_half_width = (shoulder_half * 0.34).clamp(0.12, 0.18);
@@ -5988,50 +6067,182 @@ fn build_human_proxy_geometry(
 
             vec![
                 HumanProxyBox {
-                    part: HumanProxyPart::LeftLeg,
+                    part: HumanProxyPart::LeftFoot,
                     local_min_meters: Vec3::new(
-                        -leg_gap - leg_half_width * 2.0,
-                        -body_depth * 0.82,
+                        -leg_gap - leg_half_width * 2.25,
+                        -body_depth * 1.20,
                         0.0,
                     ),
-                    local_max_meters: Vec3::new(-leg_gap, body_depth * 0.82, leg_top),
+                    local_max_meters: Vec3::new(-leg_gap * 0.80, body_depth * 1.45, height * 0.075),
                 },
                 HumanProxyBox {
-                    part: HumanProxyPart::RightLeg,
-                    local_min_meters: Vec3::new(leg_gap, -body_depth * 0.82, 0.0),
+                    part: HumanProxyPart::RightFoot,
+                    local_min_meters: Vec3::new(leg_gap * 0.80, -body_depth * 1.20, 0.0),
                     local_max_meters: Vec3::new(
-                        leg_gap + leg_half_width * 2.0,
-                        body_depth * 0.82,
+                        leg_gap + leg_half_width * 2.25,
+                        body_depth * 1.45,
+                        height * 0.075,
+                    ),
+                },
+                HumanProxyBox {
+                    part: HumanProxyPart::LeftCalf,
+                    local_min_meters: Vec3::new(
+                        -leg_gap - leg_half_width * 1.85,
+                        -body_depth * 0.66,
+                        height * 0.055,
+                    ),
+                    local_max_meters: Vec3::new(-leg_gap, body_depth * 0.66, height * 0.255),
+                },
+                HumanProxyBox {
+                    part: HumanProxyPart::RightCalf,
+                    local_min_meters: Vec3::new(leg_gap, -body_depth * 0.66, height * 0.055),
+                    local_max_meters: Vec3::new(
+                        leg_gap + leg_half_width * 1.85,
+                        body_depth * 0.66,
+                        height * 0.255,
+                    ),
+                },
+                HumanProxyBox {
+                    part: HumanProxyPart::LeftThigh,
+                    local_min_meters: Vec3::new(
+                        -leg_gap - leg_half_width * 2.10,
+                        -body_depth * 0.78,
+                        height * 0.245,
+                    ),
+                    local_max_meters: Vec3::new(-leg_gap * 0.65, body_depth * 0.78, leg_top),
+                },
+                HumanProxyBox {
+                    part: HumanProxyPart::RightThigh,
+                    local_min_meters: Vec3::new(leg_gap * 0.65, -body_depth * 0.78, height * 0.245),
+                    local_max_meters: Vec3::new(
+                        leg_gap + leg_half_width * 2.10,
+                        body_depth * 0.78,
                         leg_top,
                     ),
                 },
                 HumanProxyBox {
-                    part: HumanProxyPart::Torso,
-                    local_min_meters: Vec3::new(-shoulder_half, -body_depth, torso_bottom),
+                    part: HumanProxyPart::Pelvis,
+                    local_min_meters: Vec3::new(
+                        -hip_half * 1.12,
+                        -body_depth * 1.02,
+                        height * 0.405,
+                    ),
+                    local_max_meters: Vec3::new(hip_half * 1.12, body_depth * 1.02, height * 0.500),
+                },
+                HumanProxyBox {
+                    part: HumanProxyPart::Abdomen,
+                    local_min_meters: Vec3::new(
+                        -hip_half * 1.03,
+                        -body_depth * 0.95,
+                        height * 0.492,
+                    ),
+                    local_max_meters: Vec3::new(hip_half * 1.03, body_depth * 0.95, height * 0.630),
+                },
+                HumanProxyBox {
+                    part: HumanProxyPart::Chest,
+                    local_min_meters: Vec3::new(-shoulder_half, -body_depth, height * 0.612),
                     local_max_meters: Vec3::new(shoulder_half, body_depth, torso_top),
                 },
                 HumanProxyBox {
-                    part: HumanProxyPart::LeftArm,
+                    part: HumanProxyPart::Neck,
                     local_min_meters: Vec3::new(
-                        -shoulder_half - arm_half_width,
-                        -body_depth * 0.74,
-                        arm_bottom,
+                        -head_half_width * 0.34,
+                        -body_depth * 0.38,
+                        height * 0.752,
                     ),
-                    local_max_meters: Vec3::new(-shoulder_half, body_depth * 0.74, arm_top),
+                    local_max_meters: Vec3::new(
+                        head_half_width * 0.34,
+                        body_depth * 0.38,
+                        height * 0.815,
+                    ),
                 },
                 HumanProxyBox {
-                    part: HumanProxyPart::RightArm,
-                    local_min_meters: Vec3::new(shoulder_half, -body_depth * 0.74, arm_bottom),
+                    part: HumanProxyPart::LeftUpperArm,
+                    local_min_meters: Vec3::new(
+                        -shoulder_half - arm_half_width * 1.10,
+                        -body_depth * 0.68,
+                        height * 0.570,
+                    ),
+                    local_max_meters: Vec3::new(-shoulder_half * 0.96, body_depth * 0.68, arm_top),
+                },
+                HumanProxyBox {
+                    part: HumanProxyPart::RightUpperArm,
+                    local_min_meters: Vec3::new(
+                        shoulder_half * 0.96,
+                        -body_depth * 0.68,
+                        height * 0.570,
+                    ),
                     local_max_meters: Vec3::new(
-                        shoulder_half + arm_half_width,
-                        body_depth * 0.74,
+                        shoulder_half + arm_half_width * 1.10,
+                        body_depth * 0.68,
                         arm_top,
+                    ),
+                },
+                HumanProxyBox {
+                    part: HumanProxyPart::LeftForearm,
+                    local_min_meters: Vec3::new(
+                        -shoulder_half - arm_half_width * 1.02,
+                        -body_depth * 0.58,
+                        height * 0.365,
+                    ),
+                    local_max_meters: Vec3::new(
+                        -shoulder_half * 0.98,
+                        body_depth * 0.58,
+                        height * 0.585,
+                    ),
+                },
+                HumanProxyBox {
+                    part: HumanProxyPart::RightForearm,
+                    local_min_meters: Vec3::new(
+                        shoulder_half * 0.98,
+                        -body_depth * 0.58,
+                        height * 0.365,
+                    ),
+                    local_max_meters: Vec3::new(
+                        shoulder_half + arm_half_width * 1.02,
+                        body_depth * 0.58,
+                        height * 0.585,
+                    ),
+                },
+                HumanProxyBox {
+                    part: HumanProxyPart::LeftHand,
+                    local_min_meters: Vec3::new(
+                        -shoulder_half - arm_half_width * 1.08,
+                        -body_depth * 0.64,
+                        height * 0.310,
+                    ),
+                    local_max_meters: Vec3::new(
+                        -shoulder_half * 0.95,
+                        body_depth * 0.64,
+                        height * 0.380,
+                    ),
+                },
+                HumanProxyBox {
+                    part: HumanProxyPart::RightHand,
+                    local_min_meters: Vec3::new(
+                        shoulder_half * 0.95,
+                        -body_depth * 0.64,
+                        height * 0.310,
+                    ),
+                    local_max_meters: Vec3::new(
+                        shoulder_half + arm_half_width * 1.08,
+                        body_depth * 0.64,
+                        height * 0.380,
                     ),
                 },
                 HumanProxyBox {
                     part: HumanProxyPart::Head,
                     local_min_meters: Vec3::new(-head_half_width, -body_depth * 0.82, head_bottom),
-                    local_max_meters: Vec3::new(head_half_width, body_depth * 0.82, height),
+                    local_max_meters: Vec3::new(head_half_width, body_depth * 0.82, height * 0.972),
+                },
+                HumanProxyBox {
+                    part: HumanProxyPart::HairCap,
+                    local_min_meters: Vec3::new(
+                        -head_half_width * 1.08,
+                        -body_depth * 0.92,
+                        height * 0.900,
+                    ),
+                    local_max_meters: Vec3::new(head_half_width * 1.08, body_depth * 0.92, height),
                 },
             ]
         }
@@ -6042,6 +6253,118 @@ fn build_human_proxy_geometry(
         height_meters: height,
         body_parts,
         face_features: human_proxy_face_features(quality_tier, height, shoulder_half),
+        detail_profile: human_proxy_detail_profile(quality_tier),
+    }
+}
+
+fn human_proxy_detail_profile(quality_tier: QualityTier) -> HumanProxyDetailProfile {
+    match quality_tier {
+        QualityTier::Disabled => HumanProxyDetailProfile {
+            silhouette_segments: 0,
+            face_anatomy_feature_count: 0,
+            skin_microdetail_points: 0,
+            wrinkle_line_count: 0,
+            eye_layer_count: 0,
+            eyelash_card_count: 0,
+            eyebrow_card_count: 0,
+            hair_card_count: 0,
+            clothing_fold_count: 0,
+            clothing_stitch_count: 0,
+            visible_finger_count: 0,
+            mouth_layer_count: 0,
+            cybernetic_detail_count: 0,
+            anatomical_joint_count: 0,
+            pose_deformation_zone_count: 0,
+            garment_layer_count: 0,
+            footwear_detail_count: 0,
+            hairline_detail_count: 0,
+            limb_volume_layer_count: 0,
+            soft_tissue_form_count: 0,
+            has_teeth_tongue: false,
+            has_tearline: false,
+            has_cloth_weave: false,
+            has_facial_shadowing: false,
+        },
+        QualityTier::BackgroundApproximation => HumanProxyDetailProfile {
+            silhouette_segments: 10,
+            face_anatomy_feature_count: 0,
+            skin_microdetail_points: 0,
+            wrinkle_line_count: 0,
+            eye_layer_count: 0,
+            eyelash_card_count: 0,
+            eyebrow_card_count: 0,
+            hair_card_count: 3,
+            clothing_fold_count: 2,
+            clothing_stitch_count: 0,
+            visible_finger_count: 0,
+            mouth_layer_count: 0,
+            cybernetic_detail_count: 0,
+            anatomical_joint_count: 10,
+            pose_deformation_zone_count: 1,
+            garment_layer_count: 1,
+            footwear_detail_count: 2,
+            hairline_detail_count: 2,
+            limb_volume_layer_count: 4,
+            soft_tissue_form_count: 2,
+            has_teeth_tongue: false,
+            has_tearline: false,
+            has_cloth_weave: false,
+            has_facial_shadowing: false,
+        },
+        QualityTier::NormalRuntime => HumanProxyDetailProfile {
+            silhouette_segments: 18,
+            face_anatomy_feature_count: 3,
+            skin_microdetail_points: 18,
+            wrinkle_line_count: 4,
+            eye_layer_count: 2,
+            eyelash_card_count: 2,
+            eyebrow_card_count: 2,
+            hair_card_count: 14,
+            clothing_fold_count: 7,
+            clothing_stitch_count: 4,
+            visible_finger_count: 4,
+            mouth_layer_count: 2,
+            cybernetic_detail_count: 1,
+            anatomical_joint_count: 8,
+            pose_deformation_zone_count: 3,
+            garment_layer_count: 2,
+            footwear_detail_count: 3,
+            hairline_detail_count: 4,
+            limb_volume_layer_count: 8,
+            soft_tissue_form_count: 4,
+            has_teeth_tongue: false,
+            has_tearline: true,
+            has_cloth_weave: true,
+            has_facial_shadowing: true,
+        },
+        QualityTier::HeroHighFidelityRuntime | QualityTier::ReferenceOfflineValidation => {
+            HumanProxyDetailProfile {
+                silhouette_segments: 48,
+                face_anatomy_feature_count: 13,
+                skin_microdetail_points: 96,
+                wrinkle_line_count: 12,
+                eye_layer_count: 5,
+                eyelash_card_count: 12,
+                eyebrow_card_count: 8,
+                hair_card_count: 72,
+                clothing_fold_count: 22,
+                clothing_stitch_count: 18,
+                visible_finger_count: 10,
+                mouth_layer_count: 5,
+                cybernetic_detail_count: 4,
+                anatomical_joint_count: 24,
+                pose_deformation_zone_count: 12,
+                garment_layer_count: 4,
+                footwear_detail_count: 8,
+                hairline_detail_count: 18,
+                limb_volume_layer_count: 18,
+                soft_tissue_form_count: 10,
+                has_teeth_tongue: true,
+                has_tearline: true,
+                has_cloth_weave: true,
+                has_facial_shadowing: true,
+            }
+        }
     }
 }
 
@@ -6060,7 +6383,7 @@ fn human_proxy_face_features(
     } else {
         0.022
     };
-    [
+    let mut features = vec![
         HumanProxyFaceFeature {
             kind: HumanProxyFaceFeatureKind::LeftEye,
             lateral_offset_meters: -eye_offset,
@@ -6082,8 +6405,84 @@ fn human_proxy_face_features(
             half_width_meters: eye_offset * 0.88,
             half_height_meters: 0.01,
         },
-    ]
-    .into()
+    ];
+
+    if quality_tier >= QualityTier::HeroHighFidelityRuntime {
+        features.extend([
+            HumanProxyFaceFeature {
+                kind: HumanProxyFaceFeatureKind::NoseBridge,
+                lateral_offset_meters: 0.0,
+                height_meters: height_meters * 0.882,
+                half_width_meters: 0.006,
+                half_height_meters: 0.033,
+            },
+            HumanProxyFaceFeature {
+                kind: HumanProxyFaceFeatureKind::NoseTip,
+                lateral_offset_meters: 0.0,
+                height_meters: height_meters * 0.858,
+                half_width_meters: 0.014,
+                half_height_meters: 0.012,
+            },
+            HumanProxyFaceFeature {
+                kind: HumanProxyFaceFeatureKind::LeftCheek,
+                lateral_offset_meters: -eye_offset * 1.52,
+                height_meters: height_meters * 0.858,
+                half_width_meters: 0.030,
+                half_height_meters: 0.025,
+            },
+            HumanProxyFaceFeature {
+                kind: HumanProxyFaceFeatureKind::RightCheek,
+                lateral_offset_meters: eye_offset * 1.52,
+                height_meters: height_meters * 0.858,
+                half_width_meters: 0.030,
+                half_height_meters: 0.025,
+            },
+            HumanProxyFaceFeature {
+                kind: HumanProxyFaceFeatureKind::LeftBrow,
+                lateral_offset_meters: -eye_offset,
+                height_meters: height_meters * 0.928,
+                half_width_meters: 0.030,
+                half_height_meters: 0.004,
+            },
+            HumanProxyFaceFeature {
+                kind: HumanProxyFaceFeatureKind::RightBrow,
+                lateral_offset_meters: eye_offset,
+                height_meters: height_meters * 0.928,
+                half_width_meters: 0.030,
+                half_height_meters: 0.004,
+            },
+            HumanProxyFaceFeature {
+                kind: HumanProxyFaceFeatureKind::LeftEar,
+                lateral_offset_meters: -eye_offset * 2.28,
+                height_meters: height_meters * 0.878,
+                half_width_meters: 0.012,
+                half_height_meters: 0.027,
+            },
+            HumanProxyFaceFeature {
+                kind: HumanProxyFaceFeatureKind::RightEar,
+                lateral_offset_meters: eye_offset * 2.28,
+                height_meters: height_meters * 0.878,
+                half_width_meters: 0.012,
+                half_height_meters: 0.027,
+            },
+            HumanProxyFaceFeature {
+                kind: HumanProxyFaceFeatureKind::Chin,
+                lateral_offset_meters: 0.0,
+                height_meters: height_meters * 0.812,
+                half_width_meters: 0.036,
+                half_height_meters: 0.018,
+            },
+            HumanProxyFaceFeature {
+                kind: HumanProxyFaceFeatureKind::JawShadow,
+                lateral_offset_meters: 0.0,
+                height_meters: height_meters * 0.805,
+                half_width_meters: 0.060,
+                half_height_meters: 0.006,
+            },
+        ]);
+    }
+
+    features
 }
 
 fn deterministic_proxy_height(human_id: HumanId) -> f32 {
@@ -6546,19 +6945,46 @@ mod tests {
 
         assert_eq!(proxy.quality_tier, QualityTier::HeroHighFidelityRuntime);
         assert!(proxy.height_meters > 1.65);
-        assert_eq!(proxy.body_parts.len(), 6);
-        assert_eq!(proxy.face_features.len(), 3);
+        assert_eq!(proxy.body_parts.len(), 18);
+        assert_eq!(
+            proxy.face_features.len(),
+            proxy.detail_profile.face_anatomy_feature_count as usize
+        );
         for expected in [
+            HumanProxyPart::LeftThigh,
+            HumanProxyPart::RightThigh,
+            HumanProxyPart::LeftCalf,
+            HumanProxyPart::RightCalf,
+            HumanProxyPart::LeftFoot,
+            HumanProxyPart::RightFoot,
+            HumanProxyPart::Pelvis,
+            HumanProxyPart::Abdomen,
+            HumanProxyPart::Chest,
+            HumanProxyPart::Neck,
+            HumanProxyPart::LeftUpperArm,
+            HumanProxyPart::RightUpperArm,
+            HumanProxyPart::LeftForearm,
+            HumanProxyPart::RightForearm,
+            HumanProxyPart::LeftHand,
+            HumanProxyPart::RightHand,
+            HumanProxyPart::Head,
+            HumanProxyPart::HairCap,
+        ] {
+            assert!(
+                proxy.body_parts.iter().any(|part| part.part == expected),
+                "{expected:?} should be represented in the proxy body"
+            );
+        }
+        for coarse_part in [
             HumanProxyPart::LeftLeg,
             HumanProxyPart::RightLeg,
             HumanProxyPart::Torso,
             HumanProxyPart::LeftArm,
             HumanProxyPart::RightArm,
-            HumanProxyPart::Head,
         ] {
             assert!(
-                proxy.body_parts.iter().any(|part| part.part == expected),
-                "{expected:?} should be represented in the proxy body"
+                !proxy.body_parts.iter().any(|part| part.part == coarse_part),
+                "{coarse_part:?} should be split into anatomical proxy parts for hero humans"
             );
         }
         let head = proxy
@@ -6566,7 +6992,15 @@ mod tests {
             .iter()
             .find(|part| part.part == HumanProxyPart::Head)
             .expect("head part should exist");
-        assert_eq!(head.local_max_meters.z, proxy.height_meters);
+        let hair_cap = proxy
+            .body_parts
+            .iter()
+            .find(|part| part.part == HumanProxyPart::HairCap)
+            .expect("hair cap part should exist");
+        assert!(head.local_max_meters.z < proxy.height_meters);
+        assert!(head.local_max_meters.z > proxy.height_meters * 0.95);
+        assert_eq!(hair_cap.local_max_meters.z, proxy.height_meters);
+        assert!(hair_cap.local_min_meters.z < head.local_max_meters.z);
         assert!(proxy.face_features.iter().any(|feature| {
             feature.kind == HumanProxyFaceFeatureKind::LeftEye
                 && feature.lateral_offset_meters < 0.0
@@ -6576,6 +7010,99 @@ mod tests {
             feature.kind == HumanProxyFaceFeatureKind::RightEye
                 && feature.lateral_offset_meters > 0.0
         }));
+        for expected in [
+            HumanProxyFaceFeatureKind::NoseBridge,
+            HumanProxyFaceFeatureKind::NoseTip,
+            HumanProxyFaceFeatureKind::LeftCheek,
+            HumanProxyFaceFeatureKind::RightCheek,
+            HumanProxyFaceFeatureKind::LeftBrow,
+            HumanProxyFaceFeatureKind::RightBrow,
+            HumanProxyFaceFeatureKind::LeftEar,
+            HumanProxyFaceFeatureKind::RightEar,
+            HumanProxyFaceFeatureKind::Chin,
+            HumanProxyFaceFeatureKind::JawShadow,
+        ] {
+            assert!(
+                proxy
+                    .face_features
+                    .iter()
+                    .any(|feature| feature.kind == expected),
+                "{expected:?} should be represented in the hero face proxy"
+            );
+        }
+        assert!(proxy.detail_profile.supports_photoreal_near_proxy());
+        assert!(proxy.detail_profile.face_anatomy_feature_count >= 12);
+        assert!(proxy.detail_profile.has_teeth_tongue);
+        assert!(proxy.detail_profile.has_tearline);
+        assert!(proxy.detail_profile.has_cloth_weave);
+        assert!(proxy.detail_profile.skin_microdetail_points >= 64);
+        assert!(proxy.detail_profile.hair_card_count >= 48);
+        assert!(proxy.detail_profile.visible_finger_count >= 10);
+        assert!(proxy.detail_profile.anatomical_joint_count >= 18);
+        assert!(proxy.detail_profile.pose_deformation_zone_count >= 8);
+        assert!(proxy.detail_profile.garment_layer_count >= 3);
+        assert!(proxy.detail_profile.footwear_detail_count >= 6);
+        assert!(proxy.detail_profile.hairline_detail_count >= 12);
+        assert!(proxy.detail_profile.limb_volume_layer_count >= 12);
+        assert!(proxy.detail_profile.soft_tissue_form_count >= 8);
+    }
+
+    #[test]
+    fn normal_proxy_keeps_anatomical_parts_instead_of_stick_figure_lod() {
+        let proxy = human_proxy_geometry_for_quality(QualityTier::NormalRuntime);
+
+        assert_eq!(proxy.quality_tier, QualityTier::NormalRuntime);
+        assert_eq!(proxy.body_parts.len(), 18);
+        assert!(!proxy.detail_profile.supports_photoreal_near_proxy());
+        assert!(proxy.detail_profile.limb_volume_layer_count >= 8);
+        assert!(proxy.detail_profile.soft_tissue_form_count >= 4);
+        for expected in [
+            HumanProxyPart::LeftThigh,
+            HumanProxyPart::RightThigh,
+            HumanProxyPart::LeftCalf,
+            HumanProxyPart::RightCalf,
+            HumanProxyPart::LeftFoot,
+            HumanProxyPart::RightFoot,
+            HumanProxyPart::Pelvis,
+            HumanProxyPart::Abdomen,
+            HumanProxyPart::Chest,
+            HumanProxyPart::Neck,
+            HumanProxyPart::LeftUpperArm,
+            HumanProxyPart::RightUpperArm,
+            HumanProxyPart::LeftForearm,
+            HumanProxyPart::RightForearm,
+            HumanProxyPart::LeftHand,
+            HumanProxyPart::RightHand,
+            HumanProxyPart::Head,
+            HumanProxyPart::HairCap,
+        ] {
+            assert!(
+                proxy.body_parts.iter().any(|part| part.part == expected),
+                "{expected:?} should remain visible in normal runtime LOD"
+            );
+        }
+        for coarse_part in [
+            HumanProxyPart::LeftLeg,
+            HumanProxyPart::RightLeg,
+            HumanProxyPart::Torso,
+            HumanProxyPart::LeftArm,
+            HumanProxyPart::RightArm,
+        ] {
+            assert!(
+                !proxy.body_parts.iter().any(|part| part.part == coarse_part),
+                "{coarse_part:?} would make normal runtime humans read as stick figures"
+            );
+        }
+        assert!(proxy.face_features.iter().any(|feature| {
+            feature.kind == HumanProxyFaceFeatureKind::LeftEye
+                || feature.kind == HumanProxyFaceFeatureKind::RightEye
+        }));
+        assert!(
+            proxy
+                .face_features
+                .iter()
+                .any(|feature| feature.kind == HumanProxyFaceFeatureKind::Mouth)
+        );
     }
 
     #[test]
@@ -6583,12 +7110,48 @@ mod tests {
         let background = human_proxy_geometry_for_quality(QualityTier::BackgroundApproximation);
         let disabled = human_proxy_geometry_for_quality(QualityTier::Disabled);
 
-        assert_eq!(background.body_parts.len(), 1);
-        assert_eq!(background.body_parts[0].part, HumanProxyPart::Impostor);
-        assert!(background.body_parts[0].local_max_meters.z > 1.4);
+        assert_eq!(background.body_parts.len(), 18);
+        for expected in [
+            HumanProxyPart::LeftFoot,
+            HumanProxyPart::RightFoot,
+            HumanProxyPart::Pelvis,
+            HumanProxyPart::Chest,
+            HumanProxyPart::LeftHand,
+            HumanProxyPart::RightHand,
+            HumanProxyPart::Head,
+            HumanProxyPart::HairCap,
+        ] {
+            assert!(
+                background
+                    .body_parts
+                    .iter()
+                    .any(|part| part.part == expected),
+                "{expected:?} should survive even in background LOD"
+            );
+        }
+        assert!(
+            !background
+                .body_parts
+                .iter()
+                .any(|part| part.part == HumanProxyPart::Impostor)
+        );
+        assert!(
+            background
+                .body_parts
+                .iter()
+                .any(|part| part.local_max_meters.z > 1.4)
+        );
         assert!(background.face_features.is_empty());
+        assert!(!background.detail_profile.supports_photoreal_near_proxy());
+        assert!(background.detail_profile.silhouette_segments > 0);
+        assert!(background.detail_profile.anatomical_joint_count > 0);
+        assert!(background.detail_profile.footwear_detail_count > 0);
+        assert!(background.detail_profile.hairline_detail_count > 0);
+        assert!(background.detail_profile.limb_volume_layer_count > 0);
+        assert!(background.detail_profile.soft_tissue_form_count > 0);
         assert!(disabled.body_parts.is_empty());
         assert!(disabled.face_features.is_empty());
+        assert_eq!(disabled.detail_profile.silhouette_segments, 0);
     }
 
     #[test]

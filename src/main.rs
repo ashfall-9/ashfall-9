@@ -27,6 +27,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if args
         .iter()
+        .any(|arg| arg == "--capture-v20-golden" || arg == "--capture-golden-v20")
+    {
+        let output_dir = output_dir_arg(&args)
+            .unwrap_or_else(|| std::path::PathBuf::from("target/ashfall_v20_golden"));
+        let paths =
+            ashfall::beauty_scene_v20_capture::capture_beauty_v20_golden_scenes(&output_dir)?;
+        println!(
+            "Captured {} V20 golden scene image(s) to {}",
+            paths.len(),
+            output_dir.display()
+        );
+        for path in paths {
+            println!("{}", path.display());
+        }
+        return Ok(());
+    }
+
+    if args
+        .iter()
         .any(|arg| arg == "--headless" || arg == "--demo-log")
     {
         return run_headless_demo(args.iter().any(|arg| {

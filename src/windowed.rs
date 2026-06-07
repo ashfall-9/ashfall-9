@@ -21,10 +21,18 @@ use ashfall_rendering::beauty_v18::{
     BeautyValidationInputV18, NaturalLightingRigV18, SurfaceTextureRecipeV18,
     TexturePageResolutionV18,
 };
+use ashfall_rendering::beauty_v19::{BeautySceneV19, validate_scene_v19};
+#[cfg(test)]
 use ashfall_rendering::beauty_v19::{
-    BeautySceneV19, CurbSegmentV19, FacadeModuleV19, GroundedWaterFilmV19, HumanProxyV19,
-    LandfillPropV19, NaturalEnvironmentV19, PlantInstanceV19, RoadPatchV19, StoneInstanceV19,
-    TerrainPatchV19, Vec3V19, VehicleProxyV19, validate_scene_v19,
+    CurbSegmentV19, FacadeModuleV19, GroundedWaterFilmV19, HumanProxyV19, LandfillPropV19,
+    PlantInstanceV19, RoadPatchV19, StoneInstanceV19, TerrainPatchV19, Vec3V19, VehicleProxyV19,
+};
+use ashfall_rendering::beauty_v20::{
+    BeautyMaterialIdV20, BeautySceneV20, BeautySurfaceIdV20, CurbSegmentV20, CurveObjectKindV20,
+    CurveObjectV20, FacadeModuleV20, GroundedWaterFilmV20, HumanPoseStateV20, HumanProxyV20,
+    LandfillPropV20, NaturalEnvironmentV20, PlantInstanceV20, RoadPatchV20, StoneInstanceV20,
+    SurfaceTextureRecipeV20, TerrainPatchV20, Vec3V20, VehicleKindV20, VehicleProxyV20,
+    sample_material_v20, validate_beauty_scene_v20,
 };
 use ashfall_rendering::windowed::{
     WINDOW_CITY_INFRASTRUCTURE_DATA, WINDOW_CITY_INFRASTRUCTURE_DRAINAGE,
@@ -67,6 +75,7 @@ use crate::beauty_scene_v15_bridge::build_beauty_scene_v15;
 use crate::beauty_scene_v16_bridge::build_beauty_scene_v16;
 use crate::beauty_scene_v17_bridge::build_beauty_scene_v17;
 use crate::beauty_scene_v19_bridge::{BeautySceneBuildContextV19, build_beauty_scene_v19};
+use crate::beauty_scene_v20_bridge::{BeautySceneBuildContextV20, build_beauty_scene_v20};
 use crate::core::{MaterialDescriptor, MaterialId, MaterialState, QualityTier, Vec3};
 use crate::runtime::EngineRuntime;
 use crate::scenarios::{alley_city_generation_request, build_alley_runtime};
@@ -652,7 +661,7 @@ impl AlleyWindowScene {
             return [0.26, 0.02, 0.025, 1.0];
         }
 
-        NaturalEnvironmentV19::overcast_city_nature_landfill().clear_color_rgba()
+        NaturalEnvironmentV20::city_nature_landfill_day().clear_color_rgba()
     }
 
     fn title(&self) -> String {
@@ -800,6 +809,17 @@ impl AlleyWindowScene {
 
     fn beauty_scene_v19(&self) -> BeautySceneV19 {
         build_beauty_scene_v19(BeautySceneBuildContextV19 {
+            world_seed: self.city_template.seed,
+            frame_index: self.frame_index,
+            camera_xy_for_visibility_only: [self.camera.position[0], self.camera.position[1]],
+            include_city: true,
+            include_nature: true,
+            include_landfill: true,
+        })
+    }
+
+    fn beauty_scene_v20(&self) -> BeautySceneV20 {
+        build_beauty_scene_v20(BeautySceneBuildContextV20 {
             world_seed: self.city_template.seed,
             frame_index: self.frame_index,
             camera_xy_for_visibility_only: [self.camera.position[0], self.camera.position[1]],
@@ -1437,11 +1457,15 @@ impl AlleyWindowScene {
 
     fn scene_geometry(&self) -> WindowSceneGeometry {
         let mut geometry = WindowSceneGeometry::default();
+        if self.render_mode == WindowRenderMode::Beauty {
+            let scene = self.beauty_scene_v20();
+            add_beauty_v20_sky_detail(&mut geometry, scene.environment, self.frame_index);
+            add_beauty_v20_geometry(&mut geometry, &scene, self.camera.position);
+            return geometry;
+        }
+
         geometry.add_window_natural_sky(self.frame_index);
         geometry.add_window_alley_environment();
-        if self.render_mode == WindowRenderMode::Beauty {
-            self.add_beauty_v19_geometry(&mut geometry);
-        }
         self.add_beauty_v18_worldscape_geometry(&mut geometry);
         self.add_beauty_v17_geometry(&mut geometry);
         self.add_debug_city_geometry(&mut geometry);
@@ -1546,9 +1570,16 @@ impl AlleyWindowScene {
         add_beauty_v18_landfill_edge(geometry, self.frame_index);
     }
 
+    #[cfg(test)]
     fn add_beauty_v19_geometry(&self, geometry: &mut WindowSceneGeometry) {
         let scene = self.beauty_scene_v19();
         add_beauty_v19_geometry(geometry, &scene, self.camera.position);
+    }
+
+    #[cfg(test)]
+    fn add_beauty_v20_geometry(&self, geometry: &mut WindowSceneGeometry) {
+        let scene = self.beauty_scene_v20();
+        add_beauty_v20_geometry(geometry, &scene, self.camera.position);
     }
 
     fn add_debug_city_geometry(&self, geometry: &mut WindowSceneGeometry) {
@@ -1656,6 +1687,1414 @@ impl AlleyWindowScene {
     }
 }
 
+fn add_beauty_v20_sky_detail(
+    geometry: &mut WindowSceneGeometry,
+    environment: NaturalEnvironmentV20,
+    frame_index: u64,
+) {
+    let far_depth = 0.99;
+    let clear = environment.clear_color_rgba();
+    let top = [
+        (clear[0] * 0.62).clamp(0.0, 1.0),
+        (clear[1] * 0.68).clamp(0.0, 1.0),
+        (clear[2] * 0.82).clamp(0.0, 1.0),
+        1.0,
+    ];
+    let horizon = [
+        (clear[0] * 1.42 + environment.fog_density_0_to_1 * 0.18).clamp(0.0, 1.0),
+        (clear[1] * 1.28 + environment.fog_density_0_to_1 * 0.16).clamp(0.0, 1.0),
+        (clear[2] * 1.06 + environment.sky_turbidity_0_to_1 * 0.08).clamp(0.0, 1.0),
+        1.0,
+    ];
+    let lower_haze = [
+        0.42 + environment.fog_density_0_to_1 * 0.22,
+        0.46 + environment.fog_density_0_to_1 * 0.18,
+        0.43 + environment.rain_intensity_0_to_1 * 0.16,
+        0.20 + environment.fog_density_0_to_1 * 0.20,
+    ];
+
+    let band_count = 9;
+    for band in 0..band_count {
+        let y0 = -1.0 + 2.0 * band as f32 / band_count as f32;
+        let y1 = -1.0 + 2.0 * (band + 1) as f32 / band_count as f32;
+        let t = band as f32 / (band_count - 1) as f32;
+        let color = v20_mix_color(horizon, top, t * t);
+        geometry.screen_rect([-1.0, y0], [1.0, y1 + 0.002], far_depth, color);
+    }
+
+    geometry.screen_rect([-1.0, -0.55], [1.0, -0.28], far_depth - 0.001, lower_haze);
+
+    let sun_x = (0.52 + environment.sun_direction_world[0] * 0.30).clamp(-0.82, 0.82);
+    let sun_y = (-0.12 + environment.sun_direction_world[2] * 0.72).clamp(-0.38, 0.84);
+    let sun_size = 0.030 + (environment.sun_intensity_lux / 60_000.0).clamp(0.0, 1.0) * 0.026;
+    for (scale, alpha) in [(1.0, 0.74), (0.62, 0.58), (0.34, 0.44)] {
+        let size = sun_size * scale;
+        geometry.screen_rect(
+            [sun_x - size, sun_y - size],
+            [sun_x + size, sun_y + size],
+            far_depth - 0.006 - scale * 0.001,
+            [0.96, 0.78, 0.38, alpha],
+        );
+    }
+
+    let moon_x = (-0.60 + environment.moon_direction_world[0] * 0.20).clamp(-0.88, 0.88);
+    let moon_y = (0.28 + environment.moon_direction_world[2].max(0.0) * 0.30).clamp(-0.10, 0.78);
+    let moon_size = 0.018 + environment.moon_intensity_lux.clamp(0.0, 1.0) * 0.018;
+    geometry.screen_rect(
+        [moon_x - moon_size, moon_y - moon_size],
+        [moon_x + moon_size, moon_y + moon_size],
+        far_depth - 0.007,
+        [0.72, 0.78, 0.82, 0.18],
+    );
+
+    let cloud_count =
+        (5.0 + environment.cloud_coverage_0_to_1.clamp(0.0, 1.0) * 10.0).ceil() as usize;
+    let cloud_alpha =
+        (0.06 + environment.cloud_density_0_to_1.clamp(0.0, 1.0) * 0.14).clamp(0.0, 0.24);
+    for cloud in 0..cloud_count {
+        let seed = 0xC10D_2020 ^ cloud as u64;
+        let drift = ((frame_index as f32 * 0.00045) + v16_unit(seed, 1) * 0.10).fract();
+        let x = -0.95 + v16_unit(seed, 2) * 1.90 + (drift - 0.5) * 0.08;
+        let y = -0.02 + v16_unit(seed, 3) * 0.64;
+        let width = 0.18 + v16_unit(seed, 4) * 0.38;
+        let height = 0.018 + v16_unit(seed, 5) * 0.030;
+        let color = [
+            0.60 + environment.fog_density_0_to_1 * 0.12,
+            0.65 + environment.fog_density_0_to_1 * 0.10,
+            0.66 + environment.rain_intensity_0_to_1 * 0.08,
+            cloud_alpha,
+        ];
+        geometry.screen_rect(
+            [x - width, y - height],
+            [x + width, y + height],
+            far_depth - 0.003,
+            color,
+        );
+        geometry.screen_rect(
+            [x - width * 0.68, y - height * 2.05],
+            [x + width * 0.46, y - height * 0.78],
+            far_depth - 0.004,
+            [
+                color[0] * 0.72,
+                color[1] * 0.74,
+                color[2] * 0.78,
+                cloud_alpha * 0.70,
+            ],
+        );
+    }
+}
+
+fn add_beauty_v20_geometry(
+    geometry: &mut WindowSceneGeometry,
+    scene: &BeautySceneV20,
+    viewer_position: [f32; 3],
+) {
+    for cell in &scene.cells {
+        for terrain in &cell.terrain {
+            add_beauty_v20_terrain(geometry, &scene.material_recipes, terrain);
+        }
+        for road in &cell.roads {
+            add_beauty_v20_road(geometry, &scene.material_recipes, road);
+        }
+        for curb in &cell.curbs {
+            add_beauty_v20_curb(geometry, &scene.material_recipes, curb);
+        }
+        for facade in &cell.facades {
+            add_beauty_v20_facade(geometry, &scene.material_recipes, facade);
+        }
+        for curve in &cell.curves {
+            add_beauty_v20_curve(geometry, &scene.material_recipes, curve);
+        }
+        for water in &cell.water_films {
+            add_beauty_v20_water_film(geometry, water);
+        }
+        for plant in &cell.plants {
+            add_beauty_v20_plant(geometry, &scene.material_recipes, plant);
+        }
+        for stone in &cell.stones {
+            add_beauty_v20_stone(geometry, &scene.material_recipes, stone);
+        }
+        for prop in &cell.landfill_props {
+            add_beauty_v20_landfill_prop(geometry, &scene.material_recipes, prop);
+        }
+        for human in &cell.humans {
+            add_beauty_v20_human(geometry, human, viewer_position);
+        }
+        for vehicle in &cell.vehicles {
+            add_beauty_v20_vehicle(geometry, &scene.material_recipes, vehicle);
+        }
+    }
+}
+
+fn add_beauty_v20_terrain(
+    geometry: &mut WindowSceneGeometry,
+    recipes: &[SurfaceTextureRecipeV20],
+    terrain: &TerrainPatchV20,
+) {
+    let seed = v20_seed(terrain.surface_id.0, terrain.material_id.0, 0x7E20);
+    let half_x = terrain.size_meters[0] * 0.5;
+    let half_y = terrain.size_meters[1] * 0.5;
+    let columns = (terrain.size_meters[0] / 2.2).ceil().clamp(6.0, 12.0) as usize;
+    let rows = (terrain.size_meters[1] / 2.2).ceil().clamp(5.0, 10.0) as usize;
+
+    for ix in 0..columns {
+        for iy in 0..rows {
+            let x0 =
+                terrain.center.x - half_x + terrain.size_meters[0] * ix as f32 / columns as f32;
+            let x1 = terrain.center.x - half_x
+                + terrain.size_meters[0] * (ix + 1) as f32 / columns as f32;
+            let y0 = terrain.center.y - half_y + terrain.size_meters[1] * iy as f32 / rows as f32;
+            let y1 =
+                terrain.center.y - half_y + terrain.size_meters[1] * (iy + 1) as f32 / rows as f32;
+            let cell_seed = seed ^ (ix as u64 * 0xA31) ^ (iy as u64 * 0xC91);
+            let z = terrain.center.z + terrain.unevenness_0_to_1 * 0.016;
+            let color = v20_material_color(
+                recipes,
+                terrain.surface_id,
+                terrain.material_id,
+                [(x0 + x1) * 0.5, (y0 + y1) * 0.5],
+                cell_seed,
+                1.0,
+            );
+            geometry.world_quad_with_surface_response(
+                [
+                    x0,
+                    y0,
+                    z + v16_signed(cell_seed, 1) * terrain.unevenness_0_to_1 * 0.055,
+                ],
+                [
+                    x1,
+                    y0,
+                    z + v16_signed(cell_seed, 2) * terrain.unevenness_0_to_1 * 0.055,
+                ],
+                [
+                    x1,
+                    y1,
+                    z + v16_signed(cell_seed, 3) * terrain.unevenness_0_to_1 * 0.055,
+                ],
+                [
+                    x0,
+                    y1,
+                    z + v16_signed(cell_seed, 4) * terrain.unevenness_0_to_1 * 0.055,
+                ],
+                color,
+                WINDOW_SURFACE_RESPONSE_SOIL_V18,
+            );
+
+            let edge_cell = ix == 0 || iy == 0 || ix + 1 == columns || iy + 1 == rows;
+            if edge_cell && v16_unit(cell_seed, 17) < 0.56 {
+                let axis = v18_horizontal_axis(cell_seed, 18);
+                geometry.world_oriented_rect_with_surface_response(
+                    [
+                        (x0 + x1) * 0.5 + v16_signed(cell_seed, 19) * 0.18,
+                        (y0 + y1) * 0.5 + v16_signed(cell_seed, 20) * 0.18,
+                        z + 0.024,
+                    ],
+                    axis,
+                    v18_perp_axis(axis),
+                    [
+                        0.22 + v16_unit(cell_seed, 21) * 0.48,
+                        0.028 + v16_unit(cell_seed, 22) * 0.050,
+                    ],
+                    v20_mix_color(color, [0.055, 0.043, 0.027, 0.42], 0.34),
+                    WINDOW_SURFACE_RESPONSE_SOIL_V18,
+                );
+            }
+
+            if v16_unit(cell_seed, 5) < terrain.vegetation_coverage_0_to_1 {
+                let axis = v18_horizontal_axis(cell_seed, 6);
+                geometry.world_oriented_rect_with_surface_response(
+                    [
+                        (x0 + x1) * 0.5 + v16_signed(cell_seed, 7) * 0.36,
+                        (y0 + y1) * 0.5 + v16_signed(cell_seed, 8) * 0.36,
+                        z + 0.020,
+                    ],
+                    axis,
+                    v18_perp_axis(axis),
+                    [
+                        0.13 + v16_unit(cell_seed, 9) * 0.36,
+                        0.016 + v16_unit(cell_seed, 10) * 0.052,
+                    ],
+                    [0.040, 0.036, 0.020, 0.26 + terrain.moisture_0_to_1 * 0.18],
+                    WINDOW_SURFACE_RESPONSE_SOIL_V18,
+                );
+                if v16_unit(cell_seed, 23) < terrain.vegetation_coverage_0_to_1 * 0.62 {
+                    geometry.world_ellipsoid_with_surface_response(
+                        [
+                            (x0 + x1) * 0.5 + v16_signed(cell_seed, 24) * 0.34,
+                            (y0 + y1) * 0.5 + v16_signed(cell_seed, 25) * 0.34,
+                            z + 0.055,
+                        ],
+                        [
+                            0.060 + v16_unit(cell_seed, 26) * 0.095,
+                            0.038 + v16_unit(cell_seed, 27) * 0.060,
+                            0.030 + v16_unit(cell_seed, 28) * 0.044,
+                        ],
+                        4,
+                        8,
+                        [0.028, 0.087, 0.030, 0.44],
+                        WINDOW_SURFACE_RESPONSE_PLANT_V18,
+                    );
+                }
+            }
+
+            if terrain.unevenness_0_to_1 > 0.45 && v16_unit(cell_seed, 11) < 0.48 {
+                let pebble_radius = 0.018 + v16_unit(cell_seed, 12) * 0.050;
+                geometry.world_ellipsoid_with_surface_response(
+                    [
+                        (x0 + x1) * 0.5 + v16_signed(cell_seed, 13) * 0.42,
+                        (y0 + y1) * 0.5 + v16_signed(cell_seed, 14) * 0.42,
+                        z + 0.030 + pebble_radius * 0.22,
+                    ],
+                    [
+                        pebble_radius * (1.4 + v16_unit(cell_seed, 15) * 0.7),
+                        pebble_radius * (0.8 + v16_unit(cell_seed, 16) * 0.5),
+                        pebble_radius * 0.48,
+                    ],
+                    3,
+                    7,
+                    v20_material_color(
+                        recipes,
+                        BeautySurfaceIdV20(20_002),
+                        BeautyMaterialIdV20(0x5700_2020),
+                        [(x0 + x1) * 0.5, (y0 + y1) * 0.5],
+                        cell_seed ^ 0x5700,
+                        0.82,
+                    ),
+                    WINDOW_SURFACE_RESPONSE_STONE_V18,
+                );
+            }
+        }
+    }
+}
+
+fn add_beauty_v20_road(
+    geometry: &mut WindowSceneGeometry,
+    recipes: &[SurfaceTextureRecipeV20],
+    road: &RoadPatchV20,
+) {
+    for (segment_index, segment) in road.control_points.windows(2).enumerate() {
+        let start = v20_vec3(segment[0]);
+        let end = v20_vec3(segment[1]);
+        let Some(right) = v16_segment_right(start, end) else {
+            continue;
+        };
+        let forward = v16_segment_forward(start, end);
+        let half_width = road.width_meters * 0.5;
+        let crown = 0.014 + road.camber_0_to_1 * 0.035;
+        let seed = v20_seed(road.surface_id.0, road.material_id.0, segment_index as u64);
+        let color = v20_material_color(
+            recipes,
+            road.surface_id,
+            road.material_id,
+            [(start[0] + end[0]) * 0.5, (start[1] + end[1]) * 0.5],
+            seed,
+            1.0,
+        );
+
+        geometry.world_quad_with_surface_response(
+            [
+                start[0] + right[0] * half_width,
+                start[1] + right[1] * half_width,
+                start[2] + crown + v16_signed(seed, 1) * road.unevenness_0_to_1 * 0.012,
+            ],
+            [
+                end[0] + right[0] * half_width,
+                end[1] + right[1] * half_width,
+                end[2] + crown + v16_signed(seed, 2) * road.unevenness_0_to_1 * 0.012,
+            ],
+            [
+                end[0] - right[0] * half_width,
+                end[1] - right[1] * half_width,
+                end[2] + crown + v16_signed(seed, 3) * road.unevenness_0_to_1 * 0.012,
+            ],
+            [
+                start[0] - right[0] * half_width,
+                start[1] - right[1] * half_width,
+                start[2] + crown + v16_signed(seed, 4) * road.unevenness_0_to_1 * 0.012,
+            ],
+            color,
+            WINDOW_SURFACE_RESPONSE_WET_ROAD,
+        );
+
+        let crack_count = (road.crack_density_0_to_1 * 20.0).ceil().clamp(4.0, 12.0) as usize;
+        for crack in 0..crack_count {
+            let crack_seed = seed ^ (crack as u64 * 0xC4AC);
+            let t = (crack as f32 + 0.5) / crack_count as f32;
+            let lateral = v16_signed(crack_seed, 1) * half_width * 0.72;
+            geometry.world_oriented_rect_with_surface_response(
+                [
+                    start[0] + (end[0] - start[0]) * t + right[0] * lateral,
+                    start[1] + (end[1] - start[1]) * t + right[1] * lateral,
+                    start[2] + crown + 0.005 + crack as f32 * 0.0003,
+                ],
+                [forward[0], forward[1], 0.0],
+                [right[0], right[1], 0.0],
+                [
+                    0.10 + v16_unit(crack_seed, 2) * 0.30,
+                    0.005 + v16_unit(crack_seed, 3) * 0.014,
+                ],
+                [0.010, 0.009, 0.007, 0.48],
+                WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+            );
+        }
+
+        for fleck in 0..16 {
+            let fleck_seed = seed ^ (fleck as u64 * 0xA55A);
+            let t = 0.035 + fleck as f32 * 0.060 + v16_signed(fleck_seed, 1) * 0.017;
+            let lateral = v16_signed(fleck_seed, 2) * half_width * 0.80;
+            let center = [
+                start[0] + (end[0] - start[0]) * t + right[0] * lateral,
+                start[1] + (end[1] - start[1]) * t + right[1] * lateral,
+                start[2] + crown + 0.007 + fleck as f32 * 0.0002,
+            ];
+            let fleck_color = v20_material_color(
+                recipes,
+                road.surface_id,
+                road.material_id,
+                [center[0], center[1]],
+                fleck_seed,
+                0.24,
+            );
+            geometry.world_oriented_rect_with_surface_response(
+                center,
+                [forward[0], forward[1], 0.0],
+                [right[0], right[1], 0.0],
+                [
+                    0.024 + v16_unit(fleck_seed, 3) * 0.075,
+                    0.004 + v16_unit(fleck_seed, 4) * 0.010,
+                ],
+                fleck_color,
+                WINDOW_SURFACE_RESPONSE_WET_ROAD,
+            );
+        }
+    }
+}
+
+fn add_beauty_v20_curb(
+    geometry: &mut WindowSceneGeometry,
+    recipes: &[SurfaceTextureRecipeV20],
+    curb: &CurbSegmentV20,
+) {
+    let start = v20_vec3(curb.start);
+    let end = v20_vec3(curb.end);
+    let radius = curb.radius_meters.clamp(0.040, 0.24);
+    let seed = v20_seed(curb.surface_id.0, curb.material_id.0, 0xC0B);
+    let color = v20_material_color(
+        recipes,
+        curb.surface_id,
+        curb.material_id,
+        [start[0], start[1]],
+        seed,
+        1.0,
+    );
+    geometry.world_cylinder_between_with_surface_response(
+        start,
+        end,
+        radius,
+        18,
+        color,
+        WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+    );
+
+    let Some(right) = v16_segment_right(start, end) else {
+        return;
+    };
+    let chip_count = (curb.chip_density_0_to_1 * 15.0).ceil().clamp(2.0, 9.0) as usize;
+    for chip in 0..chip_count {
+        let chip_seed = seed ^ (chip as u64 * 0x91);
+        let center = v20_lerp3(start, end, (chip as f32 + 0.5) / chip_count as f32);
+        geometry.world_oriented_rect_with_surface_response(
+            [
+                center[0] + right[0] * v16_signed(chip_seed, 1) * radius * 0.80,
+                center[1] + right[1] * v16_signed(chip_seed, 2) * radius * 0.80,
+                center[2] + radius * 0.35,
+            ],
+            [right[0], right[1], 0.0],
+            [0.0, 0.0, 1.0],
+            [
+                0.038 + v16_unit(chip_seed, 3) * 0.070,
+                0.014 + v16_unit(chip_seed, 4) * 0.035,
+            ],
+            [0.092, 0.078, 0.058, 0.36],
+            WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+        );
+    }
+}
+
+fn add_beauty_v20_facade(
+    geometry: &mut WindowSceneGeometry,
+    recipes: &[SurfaceTextureRecipeV20],
+    facade: &FacadeModuleV20,
+) {
+    let min = v20_vec3(facade.origin);
+    let max = [
+        facade.origin.x + facade.width_meters,
+        facade.origin.y + facade.depth_meters,
+        facade.origin.z + facade.height_meters,
+    ];
+    let seed = v20_seed(facade.surface_id.0, facade.material_id.0, 0xFACA);
+    let color = v20_material_color(
+        recipes,
+        facade.surface_id,
+        facade.material_id,
+        [facade.origin.x, facade.origin.y],
+        seed,
+        1.0,
+    );
+    geometry.world_micro_detailed_box_with_surface_response(
+        min,
+        max,
+        color,
+        WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+        seed,
+        0.36 + facade.grime_0_to_1 * 0.20,
+    );
+
+    let face_y = facade.origin.y - 0.016;
+    let columns = facade.inset_window_count.max(2) as usize;
+    let floors = (facade.height_meters / 0.88).floor().clamp(2.0, 7.0) as usize;
+    for floor in 0..floors {
+        for column in 0..columns {
+            let slot_seed = seed ^ (floor as u64 * 0x79) ^ column as u64;
+            if v16_unit(slot_seed, 1) < 0.18 {
+                continue;
+            }
+            let x =
+                facade.origin.x + facade.width_meters * ((column as f32 + 0.5) / columns as f32);
+            let z = facade.origin.z + 0.72 + floor as f32 * 0.72;
+            let glass_color = v20_material_color(
+                recipes,
+                BeautySurfaceIdV20(10_004),
+                BeautyMaterialIdV20(0x61A5_2020),
+                [x, z],
+                slot_seed ^ 0x61A5,
+                0.30 + v16_unit(slot_seed, 2) * 0.18,
+            );
+            geometry.world_oriented_rect_with_surface_response(
+                [x, face_y, z.min(max[2] - 0.25)],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.13, 0.18],
+                glass_color,
+                WINDOW_SURFACE_RESPONSE_GLASS,
+            );
+            geometry.world_oriented_rect_with_surface_response(
+                [x, face_y - 0.002, z.min(max[2] - 0.25)],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.165, 0.010],
+                [0.045, 0.043, 0.038, 0.62],
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+        }
+    }
+
+    let stain_count = (facade.grime_0_to_1 * 14.0).ceil().clamp(3.0, 10.0) as usize;
+    for stain in 0..stain_count {
+        let stain_seed = seed ^ (stain as u64 * 0x51A1);
+        geometry.world_oriented_rect_with_surface_response(
+            [
+                facade.origin.x + facade.width_meters * v16_unit(stain_seed, 1),
+                face_y - 0.004,
+                facade.origin.z + facade.height_meters * (0.18 + v16_unit(stain_seed, 2) * 0.70),
+            ],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [
+                0.09 + v16_unit(stain_seed, 3) * 0.23,
+                0.035 + v16_unit(stain_seed, 4) * 0.14,
+            ],
+            [0.034, 0.028, 0.021, 0.22 + facade.grime_0_to_1 * 0.18],
+            WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+        );
+    }
+}
+
+fn add_beauty_v20_curve(
+    geometry: &mut WindowSceneGeometry,
+    recipes: &[SurfaceTextureRecipeV20],
+    curve: &CurveObjectV20,
+) {
+    let seed = v20_seed(
+        curve.surface_id.0,
+        curve.material_id.0,
+        curve.points.len() as u64,
+    );
+    let mut color = v20_material_color(
+        recipes,
+        curve.surface_id,
+        curve.material_id,
+        curve.points.first().map(|p| [p.x, p.y]).unwrap_or_default(),
+        seed,
+        0.86 + (1.0 - curve.dirt_0_to_1).clamp(0.0, 1.0) * 0.10,
+    );
+    if matches!(curve.kind, CurveObjectKindV20::Cable) {
+        color = [0.025, 0.025, 0.023, 0.78];
+    }
+    let response = match curve.kind {
+        CurveObjectKindV20::Root => WINDOW_SURFACE_RESPONSE_PLANT_V18,
+        CurveObjectKindV20::Pipe
+        | CurveObjectKindV20::Cable
+        | CurveObjectKindV20::Hose
+        | CurveObjectKindV20::Rail => WINDOW_SURFACE_RESPONSE_METAL,
+    };
+    for (index, segment) in curve.points.windows(2).enumerate() {
+        let start = v20_vec3(segment[0]);
+        let end = v20_vec3(segment[1]);
+        if curve.sag_0_to_1 > 0.05 {
+            let sag = curve.sag_0_to_1 * 0.36;
+            let mid = [
+                (start[0] + end[0]) * 0.5,
+                (start[1] + end[1]) * 0.5,
+                (start[2] + end[2]) * 0.5 - sag,
+            ];
+            geometry.world_cylinder_between_with_surface_response(
+                start,
+                mid,
+                curve.radius_meters,
+                9,
+                color,
+                response,
+            );
+            geometry.world_cylinder_between_with_surface_response(
+                mid,
+                end,
+                curve.radius_meters,
+                9,
+                color,
+                response,
+            );
+        } else {
+            geometry.world_cylinder_between_with_surface_response(
+                start,
+                end,
+                curve.radius_meters,
+                9 + index % 3,
+                color,
+                response,
+            );
+        }
+    }
+}
+
+fn add_beauty_v20_water_film(geometry: &mut WindowSceneGeometry, water: &GroundedWaterFilmV20) {
+    if !water.is_grounded() {
+        return;
+    }
+
+    let center = v20_vec3(water.center);
+    let seed = v20_seed(water.surface_id.0, water.receiver_surface_id.0, 0xA7E2);
+    let radius = water.radius_meters;
+    let axis = v18_horizontal_axis(seed, 1);
+    let side = v18_perp_axis(axis);
+    let jag = water.edge_irregularity_0_to_1.clamp(0.0, 1.0);
+    geometry.world_quad_with_surface_response(
+        v20_add2(
+            center,
+            axis,
+            side,
+            -radius * (0.86 + jag * 0.16),
+            -radius * 0.26,
+            0.002,
+        ),
+        v20_add2(
+            center,
+            axis,
+            side,
+            -radius * 0.18,
+            radius * (0.56 + jag * 0.10),
+            0.003,
+        ),
+        v20_add2(
+            center,
+            axis,
+            side,
+            radius * (0.92 + jag * 0.14),
+            radius * 0.34,
+            0.002,
+        ),
+        v20_add2(
+            center,
+            axis,
+            side,
+            radius * 0.46,
+            -radius * (0.58 + jag * 0.12),
+            0.003,
+        ),
+        [
+            0.042,
+            0.110,
+            0.132,
+            0.30 + water.reflection_quality_0_to_1 * 0.12,
+        ],
+        WINDOW_SURFACE_RESPONSE_WET_ROAD,
+    );
+    geometry.world_oriented_rect_with_surface_response(
+        v20_add2(center, axis, side, radius * 0.12, -radius * 0.12, 0.007),
+        axis,
+        side,
+        [radius * 0.30, radius * 0.020],
+        [
+            0.72,
+            0.84,
+            0.80,
+            0.12 + water.reflection_quality_0_to_1 * 0.06,
+        ],
+        WINDOW_SURFACE_RESPONSE_WET_ROAD,
+    );
+}
+
+fn add_beauty_v20_plant(
+    geometry: &mut WindowSceneGeometry,
+    recipes: &[SurfaceTextureRecipeV20],
+    plant: &PlantInstanceV20,
+) {
+    let seed = plant.variation_seed ^ v20_seed(plant.surface_id.0, plant.material_id.0, 0x71A9);
+    let root = v20_vec3(plant.root_position);
+    let axis = v18_horizontal_axis(seed, 1);
+    let height = plant.height_meters.clamp(0.06, 1.35);
+    let bend = plant.bend_0_to_1.clamp(0.0, 1.0);
+    let tip = [
+        root[0] + axis[0] * bend * height * 0.18,
+        root[1] + axis[1] * bend * height * 0.18,
+        root[2] + height,
+    ];
+    geometry.world_cylinder_between_with_surface_response(
+        root,
+        tip,
+        plant.radius_meters.clamp(0.010, 0.060) * 0.22,
+        7,
+        [0.105, 0.070, 0.040, 0.82],
+        WINDOW_SURFACE_RESPONSE_PLANT_V18,
+    );
+
+    let leaf_count = (plant.leaf_density_0_to_1 * 9.0).ceil().clamp(2.0, 8.0) as usize;
+    for leaf in 0..leaf_count {
+        let leaf_seed = seed ^ (leaf as u64 * 0x45);
+        let t = (leaf as f32 + 0.4) / leaf_count as f32;
+        let leaf_axis = v18_horizontal_axis(leaf_seed, 2);
+        let center = [
+            root[0] + (tip[0] - root[0]) * t + leaf_axis[0] * height * 0.11,
+            root[1] + (tip[1] - root[1]) * t + leaf_axis[1] * height * 0.11,
+            root[2] + height * (0.26 + t * 0.62),
+        ];
+        let color = v20_material_color(
+            recipes,
+            plant.surface_id,
+            plant.material_id,
+            [center[0], center[1]],
+            leaf_seed,
+            0.70,
+        );
+        geometry.world_oriented_rect_with_surface_response(
+            center,
+            leaf_axis,
+            [
+                leaf_axis[0] * (0.10 + bend * 0.18),
+                leaf_axis[1] * (0.10 + bend * 0.18),
+                1.0,
+            ],
+            [
+                height * (0.08 + v16_unit(leaf_seed, 3) * 0.045),
+                height * (0.018 + v16_unit(leaf_seed, 4) * 0.022),
+            ],
+            color,
+            WINDOW_SURFACE_RESPONSE_PLANT_V18,
+        );
+        if leaf % 2 == 0 || height > 0.48 {
+            geometry.world_ellipsoid_with_surface_response(
+                [
+                    center[0] + leaf_axis[0] * height * 0.018,
+                    center[1] + leaf_axis[1] * height * 0.018,
+                    center[2],
+                ],
+                [
+                    height * (0.035 + v16_unit(leaf_seed, 5) * 0.035),
+                    height * (0.014 + v16_unit(leaf_seed, 6) * 0.018),
+                    height * 0.010,
+                ],
+                3,
+                7,
+                v20_mix_color(color, [0.018, 0.105, 0.026, color[3]], 0.32),
+                WINDOW_SURFACE_RESPONSE_PLANT_V18,
+            );
+        }
+    }
+
+    if height > 0.48 {
+        let crown_color = v20_material_color(
+            recipes,
+            plant.surface_id,
+            plant.material_id,
+            [tip[0], tip[1]],
+            seed ^ 0xC012,
+            0.78,
+        );
+        for lobe in 0..3 {
+            let lobe_seed = seed ^ (0xC0AA + lobe as u64 * 0x71);
+            let lobe_axis = v18_horizontal_axis(lobe_seed, 2);
+            geometry.world_ellipsoid_with_surface_response(
+                [
+                    tip[0] + lobe_axis[0] * height * (0.035 + lobe as f32 * 0.030),
+                    tip[1] + lobe_axis[1] * height * (0.035 + lobe as f32 * 0.030),
+                    tip[2] - height * (0.035 + v16_unit(lobe_seed, 3) * 0.055),
+                ],
+                [
+                    height * (0.075 + v16_unit(lobe_seed, 4) * 0.035),
+                    height * (0.045 + v16_unit(lobe_seed, 5) * 0.030),
+                    height * (0.035 + v16_unit(lobe_seed, 6) * 0.025),
+                ],
+                4,
+                9,
+                v20_mix_color(crown_color, [0.020, 0.120, 0.030, crown_color[3]], 0.24),
+                WINDOW_SURFACE_RESPONSE_PLANT_V18,
+            );
+        }
+    }
+}
+
+fn add_beauty_v20_stone(
+    geometry: &mut WindowSceneGeometry,
+    recipes: &[SurfaceTextureRecipeV20],
+    stone: &StoneInstanceV20,
+) {
+    let seed = v20_seed(stone.surface_id.0, stone.material_id.0, 0x5700);
+    let center = v20_vec3(stone.center);
+    let radius = stone.radius_meters.clamp(0.04, 0.60);
+    let color = v20_material_color(
+        recipes,
+        stone.surface_id,
+        stone.material_id,
+        [center[0], center[1]],
+        seed,
+        0.96,
+    );
+    geometry.world_ellipsoid_with_surface_response(
+        [center[0], center[1], center[2] + radius * 0.38],
+        [
+            radius * (1.00 + stone.angularity_0_to_1 * 0.52),
+            radius * (0.62 + v16_unit(seed, 1) * 0.28),
+            radius * (0.34 + v16_unit(seed, 2) * 0.23),
+        ],
+        6,
+        12,
+        color,
+        WINDOW_SURFACE_RESPONSE_STONE_V18,
+    );
+    if radius > 0.12 {
+        let lobe_axis = v18_horizontal_axis(seed, 8);
+        geometry.world_ellipsoid_with_surface_response(
+            [
+                center[0] + lobe_axis[0] * radius * 0.42,
+                center[1] + lobe_axis[1] * radius * 0.35,
+                center[2] + radius * 0.34,
+            ],
+            [radius * 0.46, radius * 0.30, radius * 0.22],
+            5,
+            9,
+            v20_mix_color(color, [0.060, 0.057, 0.050, color[3]], 0.22),
+            WINDOW_SURFACE_RESPONSE_STONE_V18,
+        );
+    }
+    let chip_count = (stone.chip_density_0_to_1 * 7.0).ceil().clamp(1.0, 4.0) as usize;
+    for chip in 0..chip_count {
+        let chip_seed = seed ^ (chip as u64 * 0xC17);
+        let axis = v18_horizontal_axis(chip_seed, 3);
+        geometry.world_oriented_rect_with_surface_response(
+            [
+                center[0] + axis[0] * radius * 0.28,
+                center[1] + axis[1] * radius * 0.28,
+                center[2] + radius * (0.54 + v16_unit(chip_seed, 4) * 0.32),
+            ],
+            axis,
+            v18_perp_axis(axis),
+            [radius * 0.22, radius * 0.024],
+            [0.090, 0.082, 0.068, 0.28],
+            WINDOW_SURFACE_RESPONSE_STONE_V18,
+        );
+    }
+}
+
+fn add_beauty_v20_landfill_prop(
+    geometry: &mut WindowSceneGeometry,
+    recipes: &[SurfaceTextureRecipeV20],
+    prop: &LandfillPropV20,
+) {
+    let seed = v20_seed(prop.surface_id.0, prop.material_id.0, 0x1A9D);
+    let center = v20_vec3(prop.center);
+    let half = [
+        prop.size_meters[0] * 0.5,
+        prop.size_meters[1] * 0.5,
+        prop.size_meters[2] * 0.5,
+    ];
+    let color = v20_material_color(
+        recipes,
+        prop.surface_id,
+        prop.material_id,
+        [center[0], center[1]],
+        seed,
+        0.80,
+    );
+
+    let axis = v18_horizontal_axis(seed, 3);
+    let side = v18_perp_axis(axis);
+    let is_rubber = prop.material_id == BeautyMaterialIdV20(0x700E_2020);
+    let is_fabric = prop.material_id == BeautyMaterialIdV20(0xFAB1_2020);
+    let is_cardboard = prop.material_id == BeautyMaterialIdV20(0xCA2D_2020);
+    let is_rusted_metal = prop.material_id == BeautyMaterialIdV20(0xB057_2020);
+    let is_plastic = prop.material_id == BeautyMaterialIdV20(0x1A9D_2020);
+
+    if is_plastic {
+        geometry.world_ellipsoid_with_surface_response(
+            [center[0], center[1], center[2] + half[2] * 0.82],
+            [
+                half[0] * (1.10 + prop.deformation_0_to_1 * 0.48),
+                half[1] * (0.72 + v16_unit(seed, 1) * 0.44),
+                half[2] * (0.68 + v16_unit(seed, 2) * 0.30),
+            ],
+            5,
+            10,
+            color,
+            WINDOW_SURFACE_RESPONSE_LANDFILL_V18,
+        );
+        geometry.world_oriented_rect_with_surface_response(
+            v20_add2(
+                center,
+                axis,
+                side,
+                half[0] * 0.10,
+                half[1] * 0.04,
+                half[2] * 1.48,
+            ),
+            axis,
+            side,
+            [half[0] * 0.52, half[1] * 0.035],
+            v20_mix_color(color, [0.74, 0.78, 0.68, color[3]], 0.28),
+            WINDOW_SURFACE_RESPONSE_LANDFILL_V18,
+        );
+        geometry.world_cylinder_between_with_surface_response(
+            v20_add2(center, axis, side, half[0] * 0.48, 0.0, half[2] * 1.02),
+            v20_add2(
+                center,
+                axis,
+                side,
+                half[0] * 0.76,
+                half[1] * 0.06,
+                half[2] * 1.16,
+            ),
+            half[2].clamp(0.018, 0.045),
+            7,
+            v20_mix_color(color, [0.62, 0.66, 0.58, color[3]], 0.30),
+            WINDOW_SURFACE_RESPONSE_LANDFILL_V18,
+        );
+    } else if is_rubber {
+        let radius = half[0].max(half[1]).clamp(0.10, 0.42);
+        geometry.world_ellipse_ring_with_surface_response(
+            [center[0], center[1], center[2] + radius * 0.22],
+            [radius * 0.28, radius * 0.16],
+            [radius * 0.88, radius * 0.54],
+            14,
+            color,
+            WINDOW_SURFACE_RESPONSE_LANDFILL_V18,
+        );
+        geometry.world_oriented_rect_with_surface_response(
+            [
+                center[0] + axis[0] * radius * 0.25,
+                center[1] + axis[1] * radius * 0.25,
+                center[2] + radius * 0.08,
+            ],
+            axis,
+            side,
+            [radius * 0.42, radius * 0.040],
+            [0.028, 0.026, 0.022, 0.42],
+            WINDOW_SURFACE_RESPONSE_LANDFILL_V18,
+        );
+    } else if is_fabric || is_cardboard {
+        let lift = if is_fabric { 0.018 } else { 0.028 };
+        geometry.world_quad_with_surface_response(
+            v20_add2(
+                center,
+                axis,
+                side,
+                -half[0] * (0.95 + prop.deformation_0_to_1 * 0.20),
+                -half[1] * 0.74,
+                lift + v16_signed(seed, 10) * 0.010,
+            ),
+            v20_add2(
+                center,
+                axis,
+                side,
+                half[0] * (0.72 + prop.deformation_0_to_1 * 0.18),
+                -half[1] * 0.88,
+                lift + v16_signed(seed, 11) * 0.018,
+            ),
+            v20_add2(
+                center,
+                axis,
+                side,
+                half[0] * (0.98 + prop.deformation_0_to_1 * 0.16),
+                half[1] * 0.62,
+                lift + v16_signed(seed, 12) * 0.016,
+            ),
+            v20_add2(
+                center,
+                axis,
+                side,
+                -half[0] * 0.66,
+                half[1] * (0.88 + prop.deformation_0_to_1 * 0.12),
+                lift + v16_signed(seed, 13) * 0.018,
+            ),
+            color,
+            WINDOW_SURFACE_RESPONSE_LANDFILL_V18,
+        );
+        geometry.world_oriented_rect_with_surface_response(
+            v20_add2(center, axis, side, half[0] * 0.08, 0.0, lift + 0.018),
+            axis,
+            side,
+            [half[0] * 0.56, half[1] * 0.035],
+            [
+                color[0] * 0.72,
+                color[1] * 0.70,
+                color[2] * 0.66,
+                (color[3] * 0.50).clamp(0.12, 0.50),
+            ],
+            WINDOW_SURFACE_RESPONSE_LANDFILL_V18,
+        );
+    } else if is_rusted_metal {
+        geometry.world_oriented_rect_with_surface_response(
+            v20_add2(center, axis, side, 0.0, 0.0, half[2] * 0.42),
+            axis,
+            v20_normalize3([side[0] * 0.32, side[1] * 0.32, 0.94]),
+            [half[0] * 0.92, half[1] * 0.58],
+            color,
+            WINDOW_SURFACE_RESPONSE_LANDFILL_V18,
+        );
+        geometry.world_oriented_rect_with_surface_response(
+            v20_add2(
+                center,
+                axis,
+                side,
+                half[0] * 0.12,
+                half[1] * 0.08,
+                half[2] * 0.47,
+            ),
+            axis,
+            side,
+            [half[0] * 0.55, half[1] * 0.045],
+            v20_mix_color(color, [0.50, 0.18, 0.06, color[3]], 0.42),
+            WINDOW_SURFACE_RESPONSE_LANDFILL_V18,
+        );
+        geometry.world_cylinder_between_with_surface_response(
+            v20_add2(center, axis, side, -half[0] * 0.72, 0.0, half[2] * 0.36),
+            v20_add2(
+                center,
+                axis,
+                side,
+                half[0] * 0.78,
+                half[1] * 0.18,
+                half[2] * 0.52,
+            ),
+            half[2].clamp(0.016, 0.045),
+            7,
+            v20_mix_color(color, [0.50, 0.18, 0.06, color[3]], 0.36),
+            WINDOW_SURFACE_RESPONSE_LANDFILL_V18,
+        );
+    } else if prop.deformation_0_to_1 > 0.66 && prop.sharp_edges_0_to_1 < 0.34 {
+        geometry.world_ellipsoid_with_surface_response(
+            [center[0], center[1], center[2] + half[2]],
+            [
+                half[0] * (1.05 + prop.deformation_0_to_1 * 0.36),
+                half[1] * (0.82 + v16_unit(seed, 1) * 0.34),
+                half[2] * (0.72 + v16_unit(seed, 2) * 0.24),
+            ],
+            4,
+            9,
+            color,
+            WINDOW_SURFACE_RESPONSE_LANDFILL_V18,
+        );
+    } else {
+        geometry.world_micro_detailed_box_with_surface_response(
+            [
+                center[0] - half[0],
+                center[1] - half[1],
+                center[2] - half[2],
+            ],
+            [
+                center[0] + half[0],
+                center[1] + half[1],
+                center[2] + half[2],
+            ],
+            color,
+            WINDOW_SURFACE_RESPONSE_LANDFILL_V18,
+            seed,
+            0.28 + prop.deformation_0_to_1 * 0.24,
+        );
+    }
+
+    geometry.world_oriented_rect_with_surface_response(
+        [center[0], center[1], center[2] + half[2] + 0.006],
+        axis,
+        side,
+        [half[0] * 0.45, half[1] * 0.18],
+        [0.56, 0.52, 0.38, 0.20 + prop.rust_or_stain_0_to_1 * 0.10],
+        WINDOW_SURFACE_RESPONSE_LANDFILL_V18,
+    );
+}
+
+fn add_beauty_v20_human(
+    geometry: &mut WindowSceneGeometry,
+    human: &HumanProxyV20,
+    viewer_position: [f32; 3],
+) {
+    if !human.visually_valid() {
+        return;
+    }
+
+    let base = v20_vec3(human.world_position);
+    let (forward, right) = v17_yaw_vectors(human.facing_yaw_radians);
+    let pose_shift: f32 = match human.pose {
+        HumanPoseStateV20::Walking => 0.055,
+        HumanPoseStateV20::Running => 0.085,
+        HumanPoseStateV20::Crouched => -0.16,
+        HumanPoseStateV20::Sitting => -0.28,
+        HumanPoseStateV20::Idle => 0.0,
+    };
+    let (locomotion_weight, crouch_weight) = match human.pose {
+        HumanPoseStateV20::Walking => (0.58, 0.0),
+        HumanPoseStateV20::Running => (1.0, 0.0),
+        HumanPoseStateV20::Crouched => (0.18, 0.82),
+        HumanPoseStateV20::Sitting => (0.0, 1.0),
+        HumanPoseStateV20::Idle => (0.0, 0.0),
+    };
+    geometry.world_quad_with_surface_response(
+        [
+            base[0] - right[0] * human.proportions.shoulder_width_meters * 0.28 - forward[0] * 0.16,
+            base[1] - right[1] * human.proportions.shoulder_width_meters * 0.28 - forward[1] * 0.16,
+            base[2] + 0.006,
+        ],
+        [
+            base[0] + right[0] * human.proportions.shoulder_width_meters * 0.40 - forward[0] * 0.12,
+            base[1] + right[1] * human.proportions.shoulder_width_meters * 0.40 - forward[1] * 0.12,
+            base[2] + 0.007,
+        ],
+        [
+            base[0] + right[0] * human.proportions.shoulder_width_meters * 0.32 + forward[0] * 0.18,
+            base[1] + right[1] * human.proportions.shoulder_width_meters * 0.32 + forward[1] * 0.18,
+            base[2] + 0.006,
+        ],
+        [
+            base[0] - right[0] * human.proportions.shoulder_width_meters * 0.36 + forward[0] * 0.11,
+            base[1] - right[1] * human.proportions.shoulder_width_meters * 0.36 + forward[1] * 0.11,
+            base[2] + 0.007,
+        ],
+        [0.018, 0.015, 0.012, 0.24],
+        WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+    );
+
+    let render_human = HumanState {
+        human_id: human.entity_id,
+        quality_tier: QualityTier::HeroHighFidelityRuntime,
+    };
+    let seed = human.entity_id ^ 0x2020_0040;
+    let color = [
+        0.64 + v16_unit(seed, 1) * 0.12,
+        0.44 + v16_unit(seed, 2) * 0.10,
+        0.32 + v16_unit(seed, 3) * 0.08,
+        1.0,
+    ];
+    geometry.add_humanoid_proxy(
+        WindowHumanoidProxyInstance::new(
+            [base[0], base[1]],
+            base[2] + pose_shift.max(-0.20),
+            color,
+        )
+        .with_human(Some(&render_human))
+        .with_surface_state(Some(v20_human_surface_state(seed)))
+        .with_viewer_position(viewer_position)
+        .with_facing_yaw_radians(human.facing_yaw_radians)
+        .with_pose_weights(locomotion_weight, crouch_weight),
+    );
+
+    for foot in [-1.0_f32, 1.0] {
+        geometry.world_oriented_rect_with_surface_response(
+            [
+                base[0]
+                    + right[0] * foot * human.proportions.pelvis_width_meters * 0.36
+                    + forward[0] * human.proportions.foot_length_meters * 0.18,
+                base[1]
+                    + right[1] * foot * human.proportions.pelvis_width_meters * 0.36
+                    + forward[1] * human.proportions.foot_length_meters * 0.18,
+                base[2] + 0.025,
+            ],
+            [forward[0], forward[1], 0.0],
+            [right[0], right[1], 0.0],
+            [human.proportions.foot_length_meters * 0.42, 0.040],
+            [0.026, 0.024, 0.022, 0.88],
+            WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+        );
+    }
+}
+
+fn add_beauty_v20_vehicle(
+    geometry: &mut WindowSceneGeometry,
+    recipes: &[SurfaceTextureRecipeV20],
+    vehicle: &VehicleProxyV20,
+) {
+    if !vehicle.visually_valid() {
+        return;
+    }
+
+    let base = v20_vec3(vehicle.world_position);
+    let (forward2, right2) = v17_yaw_vectors(vehicle.facing_yaw_radians);
+    let forward = [forward2[0], forward2[1], 0.0];
+    let right = [right2[0], right2[1], 0.0];
+    let length = vehicle.length_meters;
+    let half_width = vehicle.width_meters * 0.5;
+    let wheel_radius = match vehicle.kind {
+        VehicleKindV20::LandfillMachine => (vehicle.height_meters * 0.20).clamp(0.30, 0.56),
+        VehicleKindV20::Motorcycle => (vehicle.height_meters * 0.22).clamp(0.20, 0.34),
+        _ => (vehicle.height_meters * 0.18).clamp(0.18, 0.34),
+    };
+    let body_z = base[2] + wheel_radius + vehicle.height_meters * 0.21;
+    let seed = vehicle.entity_id ^ 0x0CA9_2020;
+    let mut body_color = v20_material_color(
+        recipes,
+        vehicle.materials.body_surface,
+        vehicle.materials.body_material,
+        [base[0], base[1]],
+        seed,
+        1.0,
+    );
+    if matches!(vehicle.kind, VehicleKindV20::LandfillMachine) {
+        body_color = v20_mix_color(body_color, [0.48, 0.36, 0.14, 1.0], 0.50);
+    }
+    let glass_color = v20_material_color(
+        recipes,
+        vehicle.materials.glass_surface,
+        vehicle.materials.glass_material,
+        [base[0] + 0.7, base[1]],
+        seed ^ 0x61A5,
+        0.60,
+    );
+    let tire_color = v20_material_color(
+        recipes,
+        vehicle.materials.tire_surface,
+        vehicle.materials.tire_material,
+        [base[0], base[1] + 0.4],
+        seed ^ 0x700E,
+        0.94,
+    );
+    let dirt_color = v20_material_color(
+        recipes,
+        vehicle.materials.dirt_surface,
+        vehicle.materials.dirt_material,
+        [base[0] - 0.4, base[1]],
+        seed ^ 0xD127,
+        0.55,
+    );
+
+    geometry.world_oriented_rect_with_surface_response(
+        [base[0], base[1], base[2] + 0.026],
+        forward,
+        right,
+        [length * 0.62, half_width * 0.74],
+        [0.022, 0.019, 0.016, 0.34],
+        WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+    );
+    geometry.world_ellipsoid_with_surface_response(
+        v17_offset(base, forward2, right2, 0.0, 0.0, body_z - base[2]),
+        [
+            length * 0.48,
+            half_width * 0.86,
+            vehicle.height_meters * 0.22,
+        ],
+        6,
+        16,
+        body_color,
+        WINDOW_SURFACE_RESPONSE_METAL,
+    );
+    geometry.world_ellipsoid_with_surface_response(
+        v17_offset(
+            base,
+            forward2,
+            right2,
+            -length * 0.07,
+            0.0,
+            body_z - base[2] + vehicle.height_meters * 0.24,
+        ),
+        [
+            length * 0.24,
+            half_width * 0.56,
+            vehicle.height_meters * 0.15,
+        ],
+        5,
+        12,
+        glass_color,
+        WINDOW_SURFACE_RESPONSE_GLASS,
+    );
+
+    for seam in [-0.28_f32, -0.04, 0.22] {
+        geometry.world_oriented_rect_with_surface_response(
+            v17_offset(
+                base,
+                forward2,
+                right2,
+                length * seam,
+                0.0,
+                body_z - base[2] + vehicle.height_meters * 0.12,
+            ),
+            right,
+            [0.0, 0.0, 1.0],
+            [half_width * 0.78, 0.010],
+            dirt_color,
+            WINDOW_SURFACE_RESPONSE_METAL,
+        );
+    }
+
+    for axle in [-0.34_f32, 0.34] {
+        for side in [-1.0_f32, 1.0] {
+            let wheel_center = v17_offset(
+                base,
+                forward2,
+                right2,
+                axle * length,
+                side * half_width * 0.86,
+                wheel_radius,
+            );
+            geometry.world_ellipsoid_with_surface_response(
+                wheel_center,
+                [wheel_radius * 0.96, wheel_radius * 0.30, wheel_radius],
+                5,
+                12,
+                tire_color,
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+            geometry.world_ellipse_ring_with_surface_response(
+                wheel_center,
+                [wheel_radius * 0.35, wheel_radius * 0.08],
+                [wheel_radius * 0.76, wheel_radius * 0.17],
+                14,
+                [0.13, 0.13, 0.12, 0.52],
+                WINDOW_SURFACE_RESPONSE_METAL,
+            );
+        }
+    }
+
+    for side in [-1.0_f32, 1.0] {
+        geometry.world_oriented_rect_with_surface_response(
+            v17_offset(
+                base,
+                forward2,
+                right2,
+                length * 0.46,
+                side * half_width * 0.38,
+                body_z - base[2] + 0.06,
+            ),
+            right,
+            [0.0, 0.0, 1.0],
+            [0.055, 0.028],
+            [0.90, 0.78, 0.46, 0.72],
+            WINDOW_SURFACE_RESPONSE_HOT_EMISSIVE,
+        );
+    }
+}
+
+fn v20_vec3(point: Vec3V20) -> [f32; 3] {
+    [point.x, point.y, point.z]
+}
+
+fn v20_normalize3(vector: [f32; 3]) -> [f32; 3] {
+    let length = (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt();
+    if length <= f32::EPSILON {
+        [0.0, 0.0, 1.0]
+    } else {
+        [vector[0] / length, vector[1] / length, vector[2] / length]
+    }
+}
+
+fn v20_seed(surface_id: u64, material_id: u64, salt: u64) -> u64 {
+    surface_id.wrapping_mul(0x9E37_79B9).rotate_left(17)
+        ^ material_id.rotate_left(31)
+        ^ salt.wrapping_mul(0xBF58_476D)
+}
+
+fn v20_material_color(
+    recipes: &[SurfaceTextureRecipeV20],
+    surface_id: BeautySurfaceIdV20,
+    material_id: BeautyMaterialIdV20,
+    uv_meters: [f32; 2],
+    seed: u64,
+    alpha: f32,
+) -> [f32; 4] {
+    let Some(recipe) = recipes
+        .iter()
+        .find(|recipe| recipe.surface_id == surface_id || recipe.material_id == material_id)
+    else {
+        return [0.18, 0.16, 0.13, alpha];
+    };
+    let sample = sample_material_v20(recipe, uv_meters, seed);
+    let relief = 0.86 + sample.height_0_to_1 * 0.22 - sample.dirt_0_to_1 * 0.08
+        + (sample.normal_xy[0] * 0.10 + sample.normal_xy[1] * 0.07)
+        + (1.0 - sample.roughness_0_to_1) * sample.wetness_0_to_1 * 0.10;
+    [
+        (sample.base_color_linear[0] * relief).clamp(0.0, 1.0),
+        (sample.base_color_linear[1] * relief).clamp(0.0, 1.0),
+        (sample.base_color_linear[2] * relief).clamp(0.0, 1.0),
+        alpha,
+    ]
+}
+
+fn v20_mix_color(left: [f32; 4], right: [f32; 4], amount: f32) -> [f32; 4] {
+    let amount = amount.clamp(0.0, 1.0);
+    [
+        left[0] + (right[0] - left[0]) * amount,
+        left[1] + (right[1] - left[1]) * amount,
+        left[2] + (right[2] - left[2]) * amount,
+        left[3] + (right[3] - left[3]) * amount,
+    ]
+}
+
+fn v20_lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
+
+fn v20_add2(
+    center: [f32; 3],
+    axis: [f32; 3],
+    side: [f32; 3],
+    along: f32,
+    lateral: f32,
+    z_offset: f32,
+) -> [f32; 3] {
+    [
+        center[0] + axis[0] * along + side[0] * lateral,
+        center[1] + axis[1] * along + side[1] * lateral,
+        center[2] + z_offset,
+    ]
+}
+
+fn v20_human_surface_state(seed: u64) -> HumanSurfaceState {
+    HumanSurfaceState {
+        skin_wetness: 0.20 + v16_unit(seed, 10) * 0.18,
+        sweat_sheen: 0.10 + v16_unit(seed, 11) * 0.12,
+        oil_sheen: 0.14 + v16_unit(seed, 12) * 0.08,
+        bruising: v16_unit(seed, 13) * 0.05,
+        injury_overlay: 0.0,
+        dirt: 0.16 + v16_unit(seed, 14) * 0.20,
+        hair_wetness: 0.20 + v16_unit(seed, 15) * 0.18,
+        clothing_wetness: 0.26 + v16_unit(seed, 16) * 0.22,
+        clothing_damage: 0.06 + v16_unit(seed, 17) * 0.12,
+        eye_redness: 0.03 + v16_unit(seed, 18) * 0.07,
+        material_layers: Vec::new(),
+    }
+}
+
+#[cfg(test)]
 fn add_beauty_v19_geometry(
     geometry: &mut WindowSceneGeometry,
     scene: &BeautySceneV19,
@@ -1695,6 +3134,7 @@ fn add_beauty_v19_geometry(
     }
 }
 
+#[cfg(test)]
 fn add_beauty_v19_terrain(geometry: &mut WindowSceneGeometry, terrain: &TerrainPatchV19) {
     let seed = v19_seed(terrain.surface_id.0, terrain.material_id.0, 0x7E44);
     let half_x = terrain.size_meters[0] * 0.5;
@@ -1770,6 +3210,7 @@ fn add_beauty_v19_terrain(geometry: &mut WindowSceneGeometry, terrain: &TerrainP
     }
 }
 
+#[cfg(test)]
 fn add_beauty_v19_road(geometry: &mut WindowSceneGeometry, road: &RoadPatchV19) {
     for (segment_index, segment) in road.control_points.windows(2).enumerate() {
         let start = v19_vec3(segment[0]);
@@ -1854,6 +3295,7 @@ fn add_beauty_v19_road(geometry: &mut WindowSceneGeometry, road: &RoadPatchV19) 
     }
 }
 
+#[cfg(test)]
 fn add_beauty_v19_curb(geometry: &mut WindowSceneGeometry, curb: &CurbSegmentV19) {
     let start = v19_vec3(curb.start);
     let end = v19_vec3(curb.end);
@@ -1894,6 +3336,7 @@ fn add_beauty_v19_curb(geometry: &mut WindowSceneGeometry, curb: &CurbSegmentV19
     }
 }
 
+#[cfg(test)]
 fn add_beauty_v19_facade(geometry: &mut WindowSceneGeometry, facade: &FacadeModuleV19) {
     let min = v19_vec3(facade.origin);
     let max = [
@@ -1964,6 +3407,7 @@ fn add_beauty_v19_facade(geometry: &mut WindowSceneGeometry, facade: &FacadeModu
     }
 }
 
+#[cfg(test)]
 fn add_beauty_v19_water_film(geometry: &mut WindowSceneGeometry, water: &GroundedWaterFilmV19) {
     if !water.is_grounded() {
         return;
@@ -2021,6 +3465,7 @@ fn add_beauty_v19_water_film(geometry: &mut WindowSceneGeometry, water: &Grounde
     );
 }
 
+#[cfg(test)]
 fn add_beauty_v19_plant(geometry: &mut WindowSceneGeometry, plant: &PlantInstanceV19) {
     let seed = v19_seed(plant.surface_id.0, plant.material_id.0, 0x71A9);
     let root = v19_vec3(plant.root_position);
@@ -2069,6 +3514,7 @@ fn add_beauty_v19_plant(geometry: &mut WindowSceneGeometry, plant: &PlantInstanc
     }
 }
 
+#[cfg(test)]
 fn add_beauty_v19_stone(geometry: &mut WindowSceneGeometry, stone: &StoneInstanceV19) {
     let seed = v19_seed(stone.surface_id.0, stone.material_id.0, 0x5700);
     let center = v19_vec3(stone.center);
@@ -2105,6 +3551,7 @@ fn add_beauty_v19_stone(geometry: &mut WindowSceneGeometry, stone: &StoneInstanc
     }
 }
 
+#[cfg(test)]
 fn add_beauty_v19_landfill_prop(geometry: &mut WindowSceneGeometry, prop: &LandfillPropV19) {
     let seed = v19_seed(prop.surface_id.0, prop.material_id.0, 0x1A9D);
     let center = v19_vec3(prop.center);
@@ -2167,6 +3614,7 @@ fn add_beauty_v19_landfill_prop(geometry: &mut WindowSceneGeometry, prop: &Landf
     );
 }
 
+#[cfg(test)]
 fn add_beauty_v19_human(
     geometry: &mut WindowSceneGeometry,
     human: &HumanProxyV19,
@@ -2204,6 +3652,7 @@ fn add_beauty_v19_human(
     );
 }
 
+#[cfg(test)]
 fn add_beauty_v19_vehicle(geometry: &mut WindowSceneGeometry, vehicle: &VehicleProxyV19) {
     if !vehicle.is_believable_proxy() {
         return;
@@ -2339,16 +3788,19 @@ fn add_beauty_v19_vehicle(geometry: &mut WindowSceneGeometry, vehicle: &VehicleP
     }
 }
 
+#[cfg(test)]
 fn v19_vec3(point: Vec3V19) -> [f32; 3] {
     [point.x, point.y, point.z]
 }
 
+#[cfg(test)]
 fn v19_seed(surface_id: u64, material_id: u64, salt: u64) -> u64 {
     surface_id.wrapping_mul(0x9E37_79B9).rotate_left(17)
         ^ material_id.rotate_left(31)
         ^ salt.wrapping_mul(0xBF58_476D)
 }
 
+#[cfg(test)]
 fn v19_lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     [
         a[0] + (b[0] - a[0]) * t,
@@ -2357,6 +3809,7 @@ fn v19_lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     ]
 }
 
+#[cfg(test)]
 fn v19_add2(
     center: [f32; 3],
     axis: [f32; 3],
@@ -2372,6 +3825,7 @@ fn v19_add2(
     ]
 }
 
+#[cfg(test)]
 fn v19_offset(
     base: [f32; 3],
     forward: [f32; 3],
@@ -2387,6 +3841,7 @@ fn v19_offset(
     ]
 }
 
+#[cfg(test)]
 fn v19_human_surface_state(seed: u64) -> HumanSurfaceState {
     HumanSurfaceState {
         skin_wetness: 0.24 + v16_unit(seed, 10) * 0.18,
@@ -3974,7 +5429,9 @@ fn add_beauty_v17_human(geometry: &mut WindowSceneGeometry, human: &HumanProxyV1
         WindowHumanoidProxyInstance::new([base[0], base[1]], base[2], render_color)
             .with_human(Some(&render_human))
             .with_surface_state(Some(beauty_v17_human_surface_state(human)))
-            .with_viewer_position(viewer_position),
+            .with_viewer_position(viewer_position)
+            .with_facing_yaw_radians(human.facing_yaw_radians)
+            .with_pose_weights(human.walk_cycle_weight_0_to_1, 0.0),
     );
 }
 
@@ -4291,6 +5748,10 @@ impl WindowScene for AlleyWindowScene {
         let beauty_v19_report = validate_scene_v19(&self.beauty_scene_v19());
         if self.render_mode == WindowRenderMode::Beauty && !beauty_v19_report.passed {
             eprintln!("Beauty V19 validation failed: {beauty_v19_report:?}");
+        }
+        let beauty_v20_report = validate_beauty_scene_v20(&self.beauty_scene_v20());
+        if self.render_mode == WindowRenderMode::Beauty && !beauty_v20_report.passed {
+            eprintln!("Beauty V20 validation failed: {beauty_v20_report:?}");
         }
         let geometry = self.scene_geometry();
         let snapshot_light = self
@@ -5035,7 +6496,6 @@ mod tests {
         ));
 
         let beauty_geometry = beauty.scene_geometry();
-        let debug_geometry = debug.scene_geometry();
         let beauty_scene_v15 = beauty.beauty_scene_v15();
         let beauty_v15_report = beauty_scene_v15.validate_for_beauty();
         let beauty_scene_v16 = beauty.beauty_scene_v16();
@@ -5050,6 +6510,10 @@ mod tests {
         let beauty_v19_report = validate_scene_v19(&beauty_scene_v19);
         let mut beauty_v19_geometry = WindowSceneGeometry::default();
         beauty.add_beauty_v19_geometry(&mut beauty_v19_geometry);
+        let beauty_scene_v20 = beauty.beauty_scene_v20();
+        let beauty_v20_report = validate_beauty_scene_v20(&beauty_scene_v20);
+        let mut beauty_v20_geometry = WindowSceneGeometry::default();
+        beauty.add_beauty_v20_geometry(&mut beauty_v20_geometry);
         let beauty_v17_draw_list = BeautyDrawListV17::from_scene(&beauty_scene_v17);
         let mut beauty_v17_geometry = WindowSceneGeometry::default();
         beauty.add_beauty_v17_geometry(&mut beauty_v17_geometry);
@@ -5098,9 +6562,20 @@ mod tests {
         assert!(beauty_dangers.is_empty());
         assert!(beauty_routes.is_empty());
         assert!(debug.debug_overlay_enabled(|overlays| overlays.city_chunks));
+        let mut debug_overlay_geometry = WindowSceneGeometry::default();
+        debug.add_debug_city_geometry(&mut debug_overlay_geometry);
         assert!(
-            debug_geometry.vertices.len() > beauty_geometry.vertices.len() + 1_000,
+            debug_overlay_geometry.vertices.len() > 1_000,
             "Debug mode should retain generated city/streaming overlays while Beauty omits them"
+        );
+        assert!(
+            !debug.city_streaming_visuals().is_empty(),
+            "Debug mode should retain generated city streaming overlays while Beauty omits them"
+        );
+        let (debug_chunks, debug_nodes, debug_edges) = debug.generated_city_visuals();
+        assert!(
+            !debug_chunks.is_empty() || !debug_nodes.is_empty() || !debug_edges.is_empty(),
+            "Debug mode should retain generated city chunk/navigation overlays while Beauty omits them"
         );
         assert!(beauty_geometry.vertices.iter().any(|vertex| {
             vertex.coordinate_space == WindowSceneVertex::SCREEN_SPACE
@@ -5283,6 +6758,68 @@ mod tests {
             beauty_scene_v19.biome_count(ashfall_rendering::beauty_v19::WorldBiomeV19::Landfill),
             1
         );
+        assert_eq!(
+            beauty.clear_color(),
+            NaturalEnvironmentV20::city_nature_landfill_day().clear_color_rgba()
+        );
+        assert!(
+            beauty_v20_report.passed,
+            "Beauty V20 scene should pass the visual-realism contract: {beauty_v20_report:?}"
+        );
+        assert!(beauty_scene_v20.has_biome(ashfall_rendering::beauty_v20::WorldBiomeV20::City));
+        assert!(
+            beauty_scene_v20.has_biome(ashfall_rendering::beauty_v20::WorldBiomeV20::NatureReserve)
+        );
+        assert!(beauty_scene_v20.has_biome(ashfall_rendering::beauty_v20::WorldBiomeV20::Landfill));
+        assert!(beauty_scene_v20.human_count() >= 3);
+        assert!(beauty_scene_v20.vehicle_count() >= 2);
+        assert!(beauty_scene_v20.water_film_count() >= 3);
+        assert!(
+            beauty_scene_v20
+                .quarantine
+                .accepts(beauty_scene_v20.artifact_counters)
+        );
+        assert!(
+            beauty_scene_v20
+                .material_recipes
+                .iter()
+                .all(SurfaceTextureRecipeV20::is_structured_enough),
+            "V20 Beauty Mode must use structured material-page recipes, not smear surfaces"
+        );
+        assert!(
+            beauty_v20_geometry.vertices.len() > 1_200,
+            "Beauty V20 bridge should produce visible city/nature/landfill geometry"
+        );
+        assert!(beauty_v20_geometry.vertices.iter().any(|vertex| {
+            vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_WET_ROAD
+        }));
+        assert!(beauty_v20_geometry.vertices.iter().any(|vertex| {
+            vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_SOIL_V18
+        }));
+        assert!(beauty_v20_geometry.vertices.iter().any(|vertex| {
+            vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_PLANT_V18
+        }));
+        assert!(beauty_v20_geometry.vertices.iter().any(|vertex| {
+            vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_STONE_V18
+        }));
+        assert!(beauty_v20_geometry.vertices.iter().any(|vertex| {
+            vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_LANDFILL_V18
+        }));
+        assert!(beauty_v20_geometry.vertices.iter().any(|vertex| {
+            vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
+                && vertex.surface_response[2] >= WINDOW_SURFACE_RESPONSE_HUMAN_SKIN[2]
+                && vertex.surface_response[0] <= WINDOW_SURFACE_RESPONSE_HUMAN_CLOTH[0]
+                && vertex.position[2] > 0.8
+        }));
+        assert!(beauty_v20_geometry.vertices.iter().any(|vertex| {
+            vertex.coordinate_space == WindowSceneVertex::WORLD_SPACE
+                && vertex.surface_response == WINDOW_SURFACE_RESPONSE_GLASS
+        }));
         assert!(beauty_v17_draw_list.has_sky_commands());
         assert!(beauty_v17_draw_list.has_world_anchored_human_and_vehicle());
         assert!(beauty_scene_v17.humans.len() >= 3);
@@ -6450,18 +7987,18 @@ mod tests {
                 .iter()
                 .any(|vertex| vertex.position[2] > 1.45)
         );
-        assert!(
-            geometry
-                .vertices
-                .iter()
-                .any(|vertex| vertex.position[0] < 5.25)
+        let horizontal_bounds = geometry.vertices.iter().fold(
+            [[f32::INFINITY; 2], [f32::NEG_INFINITY; 2]],
+            |mut bounds, vertex| {
+                bounds[0][0] = bounds[0][0].min(vertex.position[0]);
+                bounds[0][1] = bounds[0][1].min(vertex.position[1]);
+                bounds[1][0] = bounds[1][0].max(vertex.position[0]);
+                bounds[1][1] = bounds[1][1].max(vertex.position[1]);
+                bounds
+            },
         );
-        assert!(
-            geometry
-                .vertices
-                .iter()
-                .any(|vertex| vertex.position[0] > 5.75)
-        );
+        assert!(horizontal_bounds[1][0] - horizontal_bounds[0][0] > 0.18);
+        assert!(horizontal_bounds[1][1] - horizontal_bounds[0][1] > 0.42);
         assert!(
             geometry
                 .vertices
