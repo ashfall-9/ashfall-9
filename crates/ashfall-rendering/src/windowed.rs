@@ -930,8 +930,8 @@ pub fn window_atmosphere_for_alley(
     } else {
         [0.86, 0.88, 0.9]
     };
-    let daylight = [0.54, 0.6, 0.66];
-    let neon_influence = light_energy * 0.052;
+    let daylight = [0.56, 0.62, 0.68];
+    let neon_influence = light_energy * 0.026;
     let fog_color = [
         daylight[0] + light_tint[0] * neon_influence + event_pressure * 0.035,
         daylight[1] + light_tint[1] * (neon_influence * 0.62 + pulse * 0.006),
@@ -939,9 +939,9 @@ pub fn window_atmosphere_for_alley(
     ];
     WindowAtmosphere::new(
         fog_color,
-        0.011 + pulse * 0.004 + event_pressure * 0.006,
-        1.24 + light_energy * 0.045 + event_pressure * 0.04,
-        0.064 + light_energy * 0.074 + event_pressure * 0.055,
+        0.009 + pulse * 0.003 + event_pressure * 0.004,
+        1.18 + light_energy * 0.026 + event_pressure * 0.026,
+        0.028 + light_energy * 0.030 + event_pressure * 0.025,
     )
 }
 
@@ -3368,7 +3368,6 @@ impl WindowSceneGeometry {
     }
 
     pub fn add_window_natural_sky(&mut self, frame_index: u64) {
-        let pulse = (frame_index as f32 * 0.006).sin().mul_add(0.5, 0.5);
         let far_depth = 0.99;
         self.screen_rect(
             [-1.0, -1.0],
@@ -3417,43 +3416,29 @@ impl WindowSceneGeometry {
             );
         }
 
-        let sun_center = [0.68, -0.64];
-        self.screen_ellipse(
-            sun_center,
-            [0.22, 0.22],
-            32,
+        self.screen_rect(
+            [0.30, -0.66],
+            [0.92, -0.60],
             far_depth - 0.006,
-            [1.0, 0.72, 0.34, 0.08 + pulse * 0.025],
+            [1.0, 0.82, 0.56, 0.22],
         );
-        self.screen_ellipse(
-            sun_center,
-            [0.105, 0.105],
-            32,
+        self.screen_rect(
+            [0.48, -0.61],
+            [0.78, -0.588],
             far_depth - 0.008,
-            [1.0, 0.86, 0.54, 0.32 + pulse * 0.08],
+            [1.0, 0.90, 0.68, 0.46],
         );
-        self.screen_ellipse(
-            sun_center,
-            [0.046, 0.046],
-            28,
-            far_depth - 0.01,
-            [1.0, 0.93, 0.7, 0.92],
-        );
-
-        let moon_center = [-0.68, -0.72];
-        self.screen_ellipse(
-            moon_center,
-            [0.052, 0.052],
-            24,
+        self.screen_rect(
+            [-0.86, -0.74],
+            [-0.58, -0.70],
             far_depth - 0.007,
-            [0.82, 0.86, 0.84, 0.42],
+            [0.72, 0.78, 0.82, 0.20],
         );
-        self.screen_ellipse(
-            [moon_center[0] + 0.026, moon_center[1] - 0.006],
-            [0.044, 0.047],
-            24,
+        self.screen_rect(
+            [-0.79, -0.704],
+            [-0.66, -0.694],
             far_depth - 0.009,
-            [0.37, 0.46, 0.56, 0.52],
+            [0.82, 0.86, 0.84, 0.36],
         );
 
         for (cluster, base) in [
@@ -3469,31 +3454,9 @@ impl WindowSceneGeometry {
                 + cluster as f32 * 0.29)
                 .fract();
             let base_x = base[0] + (drift - 0.5) * 0.12;
-            let base_y = base[1] + ((pulse + cluster as f32 * 0.13).sin()) * 0.018;
+            let base_y =
+                base[1] + ((frame_index as f32 * 0.001 + cluster as f32 * 0.13).sin()) * 0.018;
             let cloud_alpha = 0.12 + (cluster as f32 * 0.017).min(0.06);
-            for (lobe, offset, radii) in [
-                (0_u64, [-0.08, 0.0], [0.16, 0.042]),
-                (1, [0.02, -0.018], [0.2, 0.058]),
-                (2, [0.15, 0.006], [0.13, 0.038]),
-                (3, [-0.2, 0.012], [0.11, 0.032]),
-            ] {
-                let rough = window_stable_unit(frame_index ^ cluster, 30_001 + lobe);
-                self.screen_ellipse(
-                    [
-                        base_x + offset[0] + (rough - 0.5) * 0.018,
-                        base_y + offset[1],
-                    ],
-                    [radii[0] * (0.92 + rough * 0.18), radii[1]],
-                    18,
-                    far_depth - 0.004 - cluster as f32 * 0.0002,
-                    [
-                        0.76 + rough * 0.08,
-                        0.8 + rough * 0.06,
-                        0.8 + rough * 0.05,
-                        cloud_alpha,
-                    ],
-                );
-            }
             self.screen_rect(
                 [base_x - 0.28, base_y - 0.02],
                 [base_x + 0.3, base_y + 0.015],
@@ -5459,7 +5422,7 @@ impl WindowSceneGeometry {
             );
         }
 
-        for (center, outer, inner, color) in [
+        for (index, (center, outer, _inner, color)) in [
             (
                 [-2.6, -7.8, 0.018],
                 [1.15, 0.28],
@@ -5478,8 +5441,41 @@ impl WindowSceneGeometry {
                 [0.5, 0.13],
                 [0.06, 0.17, 0.14, 0.24],
             ),
-        ] {
-            self.world_ellipse_ring(center, inner, outer, 18, color);
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let seed = 44_700 + index as u64 * 73;
+            let axis = normalize3([
+                0.52 + window_stable_unit(seed, 1) * 0.38,
+                -0.36 + window_stable_unit(seed, 2) * 0.72,
+                0.0,
+            ]);
+            let side = normalize3([-axis[1], axis[0], 0.0]);
+            self.world_quad_with_surface_response(
+                [
+                    center[0] - axis[0] * outer[0] * 0.82 - side[0] * outer[1] * 0.50,
+                    center[1] - axis[1] * outer[0] * 0.82 - side[1] * outer[1] * 0.50,
+                    center[2],
+                ],
+                [
+                    center[0] + axis[0] * outer[0] * 0.22 - side[0] * outer[1] * 0.92,
+                    center[1] + axis[1] * outer[0] * 0.22 - side[1] * outer[1] * 0.92,
+                    center[2] + 0.002,
+                ],
+                [
+                    center[0] + axis[0] * outer[0] * 0.96 + side[0] * outer[1] * 0.44,
+                    center[1] + axis[1] * outer[0] * 0.96 + side[1] * outer[1] * 0.44,
+                    center[2] + 0.001,
+                ],
+                [
+                    center[0] - axis[0] * outer[0] * 0.46 + side[0] * outer[1] * 0.86,
+                    center[1] - axis[1] * outer[0] * 0.46 + side[1] * outer[1] * 0.86,
+                    center[2],
+                ],
+                color,
+                WINDOW_SURFACE_RESPONSE_WET_ROAD,
+            );
         }
 
         self.add_window_alley_natural_breakup();
@@ -5513,7 +5509,7 @@ impl WindowSceneGeometry {
     }
 
     fn add_window_alley_irregular_ground_detail(&mut self) {
-        for (center, inner, outer, color, segments) in [
+        for (index, (center, _inner, outer, color, _segments)) in [
             (
                 [-2.15, -5.35, 0.064],
                 [0.18, 0.06],
@@ -5535,12 +5531,38 @@ impl WindowSceneGeometry {
                 [0.016, 0.014, 0.012, 0.68],
                 12,
             ),
-        ] {
-            self.world_ellipse_ring_with_surface_response(
-                center,
-                inner,
-                outer,
-                segments,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let seed = 45_900 + index as u64 * 97;
+            let axis = normalize3([
+                0.46 + window_stable_unit(seed, 1) * 0.44,
+                -0.30 + window_stable_unit(seed, 2) * 0.60,
+                0.0,
+            ]);
+            let side = normalize3([-axis[1], axis[0], 0.0]);
+            self.world_quad_with_surface_response(
+                [
+                    center[0] - axis[0] * outer[0] * 0.80 - side[0] * outer[1] * 0.48,
+                    center[1] - axis[1] * outer[0] * 0.80 - side[1] * outer[1] * 0.48,
+                    center[2],
+                ],
+                [
+                    center[0] + axis[0] * outer[0] * 0.30 - side[0] * outer[1] * 0.86,
+                    center[1] + axis[1] * outer[0] * 0.30 - side[1] * outer[1] * 0.86,
+                    center[2] + 0.002,
+                ],
+                [
+                    center[0] + axis[0] * outer[0] * 0.94 + side[0] * outer[1] * 0.50,
+                    center[1] + axis[1] * outer[0] * 0.94 + side[1] * outer[1] * 0.50,
+                    center[2] + 0.001,
+                ],
+                [
+                    center[0] - axis[0] * outer[0] * 0.42 + side[0] * outer[1] * 0.88,
+                    center[1] - axis[1] * outer[0] * 0.42 + side[1] * outer[1] * 0.88,
+                    center[2],
+                ],
                 color,
                 WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
             );
@@ -10968,7 +10990,7 @@ impl WindowSceneGeometry {
         );
     }
 
-    pub fn add_window_alley_weather(&mut self, frame_index: u64, camera: WindowPerspectiveCamera) {
+    pub fn add_window_alley_weather(&mut self, frame_index: u64, _camera: WindowPerspectiveCamera) {
         let phase = (frame_index as f32 * 0.037).fract();
         let rain_color = [0.5, 0.62, 0.72, 0.24];
         for index in 0..34 {
@@ -10998,27 +11020,68 @@ impl WindowSceneGeometry {
         .into_iter()
         .enumerate()
         {
+            let seed = 91_001 + index as u64 * 709;
             let ripple = (phase + index as f32 * 0.19).fract();
-            let outer = [0.16 + ripple * 0.38, 0.055 + ripple * 0.15];
-            let inner = [(outer[0] - 0.055).max(0.02), (outer[1] - 0.025).max(0.01)];
-            self.world_flat_ellipse_with_surface_response(
-                [center[0], center[1], center[2] - 0.003],
-                [outer[0] * 0.92, outer[1] * 0.88],
-                12,
-                [0.05, 0.12, 0.16, 0.12],
+            let axis = normalize3([
+                0.48 + window_stable_unit(seed, 1) * 0.52,
+                -0.42 + window_stable_unit(seed, 2) * 0.84,
+                0.0,
+            ]);
+            let side = normalize3([-axis[1], axis[0], 0.0]);
+            let length = 0.24 + ripple * 0.34 + window_stable_unit(seed, 3) * 0.16;
+            let width = 0.035 + ripple * 0.070 + window_stable_unit(seed, 4) * 0.035;
+            self.world_quad_with_surface_response(
+                [
+                    center[0] - axis[0] * length * 0.88 - side[0] * width * 0.42,
+                    center[1] - axis[1] * length * 0.88 - side[1] * width * 0.42,
+                    center[2] - 0.002,
+                ],
+                [
+                    center[0] + axis[0] * length * 0.34 - side[0] * width * 0.78,
+                    center[1] + axis[1] * length * 0.34 - side[1] * width * 0.78,
+                    center[2] - 0.001,
+                ],
+                [
+                    center[0] + axis[0] * length * 0.96 + side[0] * width * 0.46,
+                    center[1] + axis[1] * length * 0.96 + side[1] * width * 0.46,
+                    center[2],
+                ],
+                [
+                    center[0] - axis[0] * length * 0.52 + side[0] * width * 0.92,
+                    center[1] - axis[1] * length * 0.52 + side[1] * width * 0.92,
+                    center[2] - 0.001,
+                ],
+                [0.032, 0.078, 0.092, 0.16],
                 WINDOW_SURFACE_RESPONSE_WET_ROAD,
             );
-            self.world_ellipse_ring_with_surface_response(
-                [center[0], center[1], center[2]],
-                inner,
-                outer,
-                12,
-                [0.38, 0.56, 0.64, 0.12 * (1.0 - ripple * 0.65)],
-                WINDOW_SURFACE_RESPONSE_WET_ROAD,
-            );
+
+            for dash in 0..4 {
+                let dash_seed = seed ^ (dash as u64 * 37);
+                let offset =
+                    (dash as f32 - 1.5) * 0.12 + (window_stable_unit(dash_seed, 5) - 0.5) * 0.08;
+                let splash_center = [
+                    center[0]
+                        + axis[0] * offset
+                        + side[0] * (window_stable_unit(dash_seed, 6) - 0.5) * 0.12,
+                    center[1]
+                        + axis[1] * offset
+                        + side[1] * (window_stable_unit(dash_seed, 7) - 0.5) * 0.12,
+                    center[2] + 0.004 + dash as f32 * 0.0005,
+                ];
+                self.world_oriented_rect_with_surface_response(
+                    splash_center,
+                    axis,
+                    side,
+                    [
+                        0.028 + window_stable_unit(dash_seed, 8) * 0.052,
+                        0.0035 + window_stable_unit(dash_seed, 9) * 0.006,
+                    ],
+                    [0.44, 0.58, 0.62, 0.09 * (1.0 - ripple * 0.42)],
+                    WINDOW_SURFACE_RESPONSE_WET_ROAD,
+                );
+            }
         }
 
-        let right = camera.basis().right;
         for (index, height) in [0.75, 1.08, 1.42, 1.78].into_iter().enumerate() {
             let drift = (phase + index as f32 * 0.23).fract();
             let center = [
@@ -11026,29 +11089,68 @@ impl WindowSceneGeometry {
                 0.55 + drift * 0.42,
                 height + drift * 0.08,
             ];
-            let alpha = 0.13 * (1.0 - index as f32 * 0.08).max(0.35);
-            self.world_billboard(
-                center,
-                right,
-                0.54 + drift * 0.34 + index as f32 * 0.08,
-                0.34 + index as f32 * 0.12,
-                [0.55, 0.72, 0.76, alpha],
-            );
-            self.world_billboard(
-                center,
-                [right[1], -right[0], 0.0],
-                0.38 + drift * 0.22,
-                0.3 + index as f32 * 0.1,
-                [0.48, 0.62, 0.68, alpha * 0.78],
-            );
+            let alpha = 0.075 * (1.0 - index as f32 * 0.08).max(0.35);
+            for strip in 0..3 {
+                let seed = 92_501 + index as u64 * 23 + strip;
+                let offset = (strip as f32 - 1.0) * (0.12 + drift * 0.04);
+                let right = normalize3([
+                    0.22 + window_stable_unit(seed, 1) * 0.56,
+                    0.78 + window_stable_unit(seed, 2) * 0.20,
+                    0.0,
+                ]);
+                self.world_oriented_rect_with_surface_response(
+                    [
+                        center[0] + offset,
+                        center[1] + (window_stable_unit(seed, 3) - 0.5) * 0.18,
+                        center[2] + (window_stable_unit(seed, 4) - 0.5) * 0.12,
+                    ],
+                    right,
+                    normalize3([
+                        0.05 * (window_stable_unit(seed, 5) - 0.5),
+                        0.08 * (window_stable_unit(seed, 6) - 0.5),
+                        1.0,
+                    ]),
+                    [
+                        0.035 + drift * 0.022 + strip as f32 * 0.006,
+                        0.20 + index as f32 * 0.055,
+                    ],
+                    [0.50, 0.62, 0.64, alpha * (0.72 + strip as f32 * 0.10)],
+                    WINDOW_SURFACE_RESPONSE_WET_ROAD,
+                );
+            }
         }
 
-        for (center, color) in [
-            ([1.0, 3.05, 2.48], [0.52, 0.46, 0.42, 0.05]),
-            ([1.0, 2.85, 2.16], [0.4, 0.5, 0.54, 0.05]),
-            ([-4.82, 3.4, 1.52], [0.34, 0.45, 0.48, 0.045]),
-        ] {
-            self.world_billboard(center, right, 3.1, 1.1, color);
+        for (index, (center, color)) in [
+            ([1.0, 3.05, 2.48], [0.28, 0.27, 0.24, 0.026]),
+            ([1.0, 2.85, 2.16], [0.25, 0.30, 0.31, 0.024]),
+            ([-4.82, 3.4, 1.52], [0.22, 0.28, 0.29, 0.022]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for strip in 0..4 {
+                let seed = 93_701 + index as u64 * 41 + strip;
+                let axis = normalize3([
+                    0.65 + window_stable_unit(seed, 1) * 0.25,
+                    -0.30 + window_stable_unit(seed, 2) * 0.60,
+                    0.0,
+                ]);
+                self.world_oriented_rect_with_surface_response(
+                    [
+                        center[0] + (strip as f32 - 1.5) * 0.30,
+                        center[1] + (window_stable_unit(seed, 3) - 0.5) * 0.26,
+                        center[2] + (window_stable_unit(seed, 4) - 0.5) * 0.28,
+                    ],
+                    axis,
+                    [0.0, 0.0, 1.0],
+                    [
+                        0.12 + window_stable_unit(seed, 5) * 0.16,
+                        0.22 + window_stable_unit(seed, 6) * 0.20,
+                    ],
+                    color,
+                    WINDOW_SURFACE_RESPONSE_ROUGH_DIRT,
+                );
+            }
         }
     }
 
@@ -13303,20 +13405,40 @@ fn window_surface_detail_for_quad(
     let wetness = surface_response[2].clamp(0.0, 1.0);
     let emissive = surface_response[3].clamp(0.0, 1.0);
     let dark_surface = (1.0 - (color[0] + color[1] + color[2]) / 3.0).clamp(0.0, 1.0);
+    let green_bias = (color[1] - color[0].max(color[2])).clamp(0.0, 1.0);
+    let chroma = color[0].max(color[1]).max(color[2]) - color[0].min(color[1]).min(color[2]);
+    let plant_like = (green_bias * 3.0).clamp(0.0, 1.0) * (1.0 - metallic) * (1.0 - emissive);
+    let natural_rough =
+        (roughness - 0.55).max(0.0) * (1.0 - metallic) * (1.0 - emissive) * (1.0 - wetness * 0.32);
+    let stone_like =
+        (1.0 - (chroma * 5.0).clamp(0.0, 1.0)) * natural_rough * (wetness + 0.18).clamp(0.0, 0.46);
+    let texture_class_boost =
+        (plant_like * 0.70 + natural_rough * 0.54 + stone_like * 0.42 + wetness * 0.24)
+            .clamp(0.0, 1.25);
     let seed = window_stable_unit(
         window_position_seed(center)
             ^ (color[0].to_bits() as u64).rotate_left(11)
             ^ (surface_response[0].to_bits() as u64).rotate_left(29),
         8_811,
     );
-    let scale = (0.46 + roughness * 1.42 + metallic * 0.62 + wetness * 0.36 + dark_surface * 0.28
+    let scale = (0.46
+        + roughness * 1.42
+        + metallic * 0.62
+        + wetness * 0.36
+        + dark_surface * 0.28
+        + texture_class_boost
         - emissive * 0.58)
-        .clamp(0.08, 4.0)
+        .clamp(0.08, 5.2)
         / footprint.sqrt().clamp(0.55, 2.2);
-    let state_intensity =
-        (wetness * 0.42 + dark_surface * 0.18 + roughness * 0.16 + color[3] * 0.08).clamp(0.0, 1.0);
+    let state_intensity = (wetness * 0.42
+        + dark_surface * 0.18
+        + roughness * 0.16
+        + color[3] * 0.08
+        + texture_class_boost * 0.18)
+        .clamp(0.0, 1.0);
     let relief = ((roughness * 0.48 + wetness * 0.2 + metallic * 0.12 + dark_surface * 0.1)
-        * (1.0 - emissive * 0.65))
+        * (1.0 - emissive * 0.65)
+        + texture_class_boost * 0.20)
         .clamp(0.0, 1.0);
 
     window_clamp_surface_detail([scale, seed, state_intensity, relief])
@@ -13356,6 +13478,16 @@ fn window_generated_surface_cache_for_quad(
     let state_intensity = material_detail[2].clamp(0.0, 1.0);
     let relief = material_detail[3].clamp(0.0, 1.0);
     let dark_surface = (1.0 - (color[0] + color[1] + color[2]) / 3.0).clamp(0.0, 1.0);
+    let green_bias = (color[1] - color[0].max(color[2])).clamp(0.0, 1.0);
+    let chroma = color[0].max(color[1]).max(color[2]) - color[0].min(color[1]).min(color[2]);
+    let natural_material =
+        ((roughness - 0.48).max(0.0) * (1.0 - metallic) * (1.0 - emissive)).clamp(0.0, 1.0);
+    let plant_like = (green_bias * 3.2).clamp(0.0, 1.0) * natural_material;
+    let stone_like =
+        (1.0 - (chroma * 5.4).clamp(0.0, 1.0)) * natural_material * (wetness + 0.22).min(0.58);
+    let material_texture_boost =
+        (natural_material * 0.34 + plant_like * 0.28 + stone_like * 0.24 + wetness * 0.16)
+            .clamp(0.0, 0.82);
     let seed = window_position_seed(center)
         ^ window_position_seed(a).rotate_left(5)
         ^ window_position_seed(c).rotate_left(17)
@@ -13369,6 +13501,7 @@ fn window_generated_surface_cache_for_quad(
         + dark_surface * 0.18
         + state_intensity * 0.18
         + detail_scale * 0.035
+        + material_texture_boost * 0.18
         - emissive * 0.08)
         .clamp(0.0, 1.0);
     let normal_height = (0.06
@@ -13376,10 +13509,15 @@ fn window_generated_surface_cache_for_quad(
         + roughness * 0.18
         + metallic * 0.13
         + state_intensity * 0.16
+        + material_texture_boost * 0.26
         + footprint.recip() * 0.08)
         .clamp(0.0, 1.0);
-    let state_mask =
-        (state_intensity * 0.46 + wetness * 0.3 + metallic * 0.14 + emissive * 0.2).clamp(0.0, 1.0);
+    let state_mask = (state_intensity * 0.46
+        + wetness * 0.3
+        + metallic * 0.14
+        + emissive * 0.2
+        + material_texture_boost * 0.18)
+        .clamp(0.0, 1.0);
     let page_id = window_stable_unit(seed, 12_019);
 
     window_clamp_surface_cache([albedo_roughness, normal_height, state_mask, page_id])
@@ -16022,7 +16160,7 @@ mod fs {
                     fbm_noise(uv * 0.74 + vec2(seed * 0.07, cache_page * 0.011)),
                     fbm_noise(uv.yx * 0.68 + vec2(3.1 + cache_page * 0.017, seed * 0.09))
                 ) - vec2(0.5);
-                return uv + warp * (0.24 + view_detail * 0.2);
+                return uv + warp * (0.008 + view_detail * 0.014);
             }
 
             vec2 surface_uv(vec3 position, vec3 normal_dir) {
@@ -16034,6 +16172,12 @@ mod fs {
                     return position.yz;
                 }
                 return position.xz;
+            }
+
+            float color_chroma(vec3 color) {
+                float highest = max(max(color.r, color.g), color.b);
+                float lowest = min(min(color.r, color.g), color.b);
+                return highest - lowest;
             }
 
             vec3 procedural_surface_normal(
@@ -16065,16 +16209,16 @@ mod fs {
                 vec2 uv = warped_surface_uv(surface_uv(position, normal_dir), detail_seed, cache_page, view_detail);
                 vec3 tangent = normalize(abs(normal_dir.z) < 0.92 ? cross(vec3(0.0, 0.0, 1.0), normal_dir) : vec3(1.0, 0.0, 0.0));
                 vec3 bitangent = normalize(cross(normal_dir, tangent));
-                float broad = fbm_noise(uv * 2.8 * detail_scale + vec2(detail_seed + cache_page * 0.013, position.z * 0.31));
-                float n0 = fbm_noise(uv * 12.0 * detail_scale + vec2(detail_seed + cache_page * 0.019, position.z * 0.31));
-                float n1 = ridged_noise(uv.yx * 16.0 * detail_scale + vec2(4.7 + detail_seed, 1.3 + cache_page * 0.017));
+                float broad = fbm_noise(uv * 3.4 * detail_scale + vec2(detail_seed + cache_page * 0.013, position.z * 0.31));
+                float n0 = fbm_noise(uv * 18.0 * detail_scale + vec2(detail_seed + cache_page * 0.019, position.z * 0.31));
+                float n1 = ridged_noise(uv.yx * 24.0 * detail_scale + vec2(4.7 + detail_seed, 1.3 + cache_page * 0.017));
                 float cache_grain = view_detail > 0.04
-                    ? value_noise(uv * 46.0 * detail_scale + vec2(cache_page * 0.031, cache_page * 0.047))
+                    ? value_noise(uv * 76.0 * detail_scale + vec2(cache_page * 0.031, cache_page * 0.047))
                     : 0.5;
                 return normalize(
                     normal_dir
-                    + tangent * ((broad - 0.5) * amplitude * 0.42 + (n0 - 0.5) * amplitude * view_detail * 0.64 + (cache_grain - 0.5) * amplitude * cache_normal * view_detail * 0.34)
-                    + bitangent * ((n1 - 0.5) * amplitude * (0.38 + view_detail * 0.42) + (cache_grain - 0.5) * amplitude * cache_normal * view_detail * 0.2)
+                    + tangent * ((broad - 0.5) * amplitude * 0.16 + (n0 - 0.5) * amplitude * view_detail * 0.72 + (cache_grain - 0.5) * amplitude * cache_normal * view_detail * 0.46)
+                    + bitangent * ((n1 - 0.5) * amplitude * (0.26 + view_detail * 0.48) + (cache_grain - 0.5) * amplitude * cache_normal * view_detail * 0.28)
                 );
             }
 
@@ -16102,19 +16246,47 @@ mod fs {
                 float view_detail = detail_lod_weight(view_depth);
                 vec2 uv = warped_surface_uv(surface_uv(position, normal_dir), detail_seed, cache_page, view_detail);
 
-                float low = fbm_noise(uv * 0.72 * detail_scale + vec2(detail_seed));
-                float mid = fbm_noise(uv * 4.8 * detail_scale + vec2(1.7 + detail_seed, 6.1));
+                float low = fbm_noise(uv * 1.10 * detail_scale + vec2(detail_seed));
+                float mid = fbm_noise(uv * 6.8 * detail_scale + vec2(1.7 + detail_seed, 6.1));
                 float high = view_detail > 0.04
-                    ? fbm_noise(uv * 21.0 * detail_scale + vec2(position.z * 0.19, detail_seed))
+                    ? fbm_noise(uv * 34.0 * detail_scale + vec2(position.z * 0.19, detail_seed))
                     : 0.5;
-                vec3 color = base_color * (0.84 + low * 0.1 + mid * (0.06 + state_intensity * 0.07));
+                vec3 color = base_color * (0.90 + (low - 0.5) * 0.08 + (mid - 0.5) * (0.08 + state_intensity * 0.06));
                 float cache_tile = fbm_noise(uv * (2.0 + detail_scale * 0.4) + vec2(cache_page * 0.011, cache_page * 0.023));
                 float cache_grain = view_detail > 0.04
-                    ? value_noise(uv * (36.0 + detail_scale * 9.0) + vec2(cache_page * 0.071, detail_seed))
+                    ? value_noise(uv * (70.0 + detail_scale * 18.0) + vec2(cache_page * 0.071, detail_seed))
                     : cache_tile;
-                color *= 0.96 + (cache_tile - 0.5) * cache_albedo * 0.18 + (cache_grain - 0.5) * cache_albedo * 0.08;
+                color *= 0.985 + (cache_tile - 0.5) * cache_albedo * 0.10 + (cache_grain - 0.5) * cache_albedo * 0.18;
+                float chroma = color_chroma(base_color);
+                float green_bias = clamp(base_color.g - max(base_color.r, base_color.b), 0.0, 1.0);
+                float plant_like = smoothstep(0.035, 0.18, green_bias)
+                    * smoothstep(0.08, 0.32, wetness)
+                    * (1.0 - metallic)
+                    * (1.0 - emissive);
+                float neutral_surface = 1.0 - smoothstep(0.045, 0.22, chroma);
+                float stone_like = smoothstep(0.55, 0.88, roughness)
+                    * smoothstep(0.015, 0.16, wetness)
+                    * neutral_surface
+                    * (1.0 - metallic)
+                    * (1.0 - emissive)
+                    * (1.0 - plant_like);
+                float asphalt_like = smoothstep(0.45, 0.92, wetness)
+                    * smoothstep(0.08, 0.34, roughness)
+                    * (1.0 - metallic)
+                    * (1.0 - emissive)
+                    * (1.0 - plant_like);
+                float soil_like = smoothstep(0.64, 0.96, roughness)
+                    * (1.0 - smoothstep(0.35, 0.82, wetness))
+                    * (1.0 - metallic)
+                    * (1.0 - emissive)
+                    * (1.0 - plant_like)
+                    * (1.0 - stone_like * 0.62);
+                float aggregate = smoothstep(0.42, 0.92, cache_grain) * roughness * (1.0 - metallic) * (1.0 - emissive) * view_detail;
+                color = mix(color, color * vec3(0.68, 0.69, 0.65) + vec3(0.030, 0.028, 0.024), aggregate * (0.10 + wetness * 0.10));
+                float light_aggregate = smoothstep(0.78, 0.98, value_noise(uv * (118.0 + detail_scale * 20.0) + vec2(detail_seed, cache_page * 0.013)));
+                color += vec3(0.035, 0.034, 0.030) * light_aggregate * roughness * (1.0 - emissive) * view_detail * 0.28;
                 float cache_height_shadow = smoothstep(0.58, 0.92, cache_grain) * cache_height * roughness * (1.0 - emissive);
-                color = mix(color, color * vec3(0.68, 0.7, 0.66), cache_height_shadow * 0.18);
+                color = mix(color, color * vec3(0.70, 0.72, 0.68), cache_height_shadow * 0.14);
                 float cache_crack = ridged_noise(vec2(uv.x * 13.0 * detail_scale + cache_page * 0.031, uv.y * 1.35 + detail_seed));
                 float generated_mask = smoothstep(0.74, 0.98, cache_crack)
                     * cache_mask
@@ -16122,15 +16294,40 @@ mod fs {
                     * (1.0 - emissive);
                 color = mix(color, color * vec3(0.52, 0.55, 0.5), generated_mask * 0.28);
 
-                float pore_mask = smoothstep(0.58, 0.94, high) * roughness * (0.55 + relief * 0.65) * (1.0 - emissive) * view_detail;
-                color = mix(color, color * vec3(0.58, 0.6, 0.57), pore_mask * 0.34);
+                float gravel = smoothstep(0.72, 0.98, value_noise(uv * (96.0 + detail_scale * 22.0) + vec2(cache_page * 0.083, detail_seed * 1.7))) * view_detail;
+                float tar_crack = smoothstep(0.80, 0.985, ridged_noise(vec2(uv.x * (9.0 + detail_scale * 3.0), uv.y * 1.45 + detail_seed)));
+                vec3 asphalt_fleck = mix(vec3(0.015, 0.015, 0.014), vec3(0.18, 0.17, 0.15), gravel);
+                color = mix(color, color * vec3(0.72, 0.76, 0.78) + asphalt_fleck, asphalt_like * gravel * 0.30);
+                color = mix(color, color * vec3(0.28, 0.30, 0.28), asphalt_like * tar_crack * 0.24);
 
-                float grime = smoothstep(0.68, 0.96, mid) * roughness * (0.45 + state_intensity * 0.75) * (1.0 - emissive);
-                color = mix(color, color * vec3(0.62, 0.66, 0.6), grime * 0.24);
+                float soil_clump = fbm_noise(uv * (18.0 + detail_scale * 4.0) + vec2(detail_seed * 0.31, cache_page * 0.029));
+                float pebble = smoothstep(0.78, 0.99, value_noise(uv * (58.0 + detail_scale * 10.0) + vec2(cache_page * 0.057, detail_seed * 2.1)));
+                vec3 soil_color = vec3(0.16, 0.095, 0.045) * (0.72 + soil_clump * 0.62);
+                color = mix(color, color * vec3(0.70, 0.61, 0.48) + soil_color, soil_like * (0.24 + soil_clump * 0.22));
+                color = mix(color, color + vec3(0.10, 0.085, 0.060) * pebble, soil_like * pebble * 0.28 * view_detail);
+
+                float leaf_wave = abs(sin((uv.x * 18.0 + uv.y * 7.0) * max(detail_scale, 0.7) + detail_seed));
+                float leaf_vein = 1.0 - smoothstep(0.04, 0.18, min(leaf_wave, 1.0 - leaf_wave));
+                float leaf_mottle = fbm_noise(uv * 32.0 + vec2(detail_seed, cache_page * 0.041));
+                color = mix(color, color * vec3(0.58, 0.86, 0.48) + vec3(0.012, 0.040, 0.010), plant_like * (0.16 + leaf_mottle * 0.20));
+                color += vec3(0.035, 0.070, 0.024) * plant_like * leaf_vein * view_detail * 0.22;
+
+                float strata = abs(sin((uv.y * 6.5 + uv.x * 1.7) * max(detail_scale, 0.45) + detail_seed * 0.7));
+                float stone_pit = smoothstep(0.70, 0.98, value_noise(uv * (44.0 + detail_scale * 8.0) + vec2(cache_page * 0.037, detail_seed)));
+                color = mix(color, color * vec3(0.74, 0.74, 0.70) + vec3(0.035, 0.033, 0.030), stone_like * strata * 0.22);
+                color = mix(color, color * vec3(0.56, 0.57, 0.54), stone_like * stone_pit * 0.18 * view_detail);
+
+                float pore_mask = smoothstep(0.64, 0.97, high) * roughness * (0.55 + relief * 0.65) * (1.0 - emissive) * view_detail;
+                color = mix(color, color * vec3(0.64, 0.66, 0.62), pore_mask * 0.24);
+
+                float grime = smoothstep(0.72, 0.97, mid) * roughness * (0.42 + state_intensity * 0.70) * (1.0 - emissive);
+                color = mix(color, color * vec3(0.58, 0.61, 0.56), grime * 0.18);
 
                 float scratch_noise = ridged_noise(vec2(uv.x * 24.0 * detail_scale + uv.y * 2.0, uv.y * 3.5 + detail_seed));
+                float brushed = smoothstep(0.82, 0.99, ridged_noise(vec2(uv.x * 72.0, uv.y * 6.0 + detail_seed)));
                 float scratch_mask = smoothstep(0.82, 0.99, scratch_noise) * (metallic * 0.9 + roughness * 0.25 + relief * 0.18) * (1.0 - emissive) * view_detail;
                 color += vec3(0.11, 0.12, 0.12) * scratch_mask;
+                color += vec3(0.055, 0.060, 0.060) * brushed * metallic * (1.0 - emissive) * view_detail * 0.32;
 
                 float rust_noise = fbm_noise(uv * 7.5 * detail_scale + vec2(9.2 + detail_seed, 2.4));
                 float rust_mask = smoothstep(0.54, 0.92, rust_noise) * metallic * state_intensity * (1.0 - wetness * 0.42) * (1.0 - emissive);
@@ -16149,7 +16346,7 @@ mod fs {
                 float seam_breakup = smoothstep(0.18, 0.86, fbm_noise(uv * 1.9 + vec2(cache_page * 0.041, detail_seed)));
                 float grid_x = 1.0 - smoothstep(0.01, 0.052, min(fx, 1.0 - fx));
                 float grid_y = 1.0 - smoothstep(0.01, 0.052, min(fy, 1.0 - fy));
-                float panel_mask = max(grid_x, grid_y) * roughness * (1.0 - emissive) * 0.1 * seam_breakup;
+                float panel_mask = max(grid_x, grid_y) * roughness * (1.0 - emissive) * 0.055 * seam_breakup;
                 color = mix(color, color * vec3(0.72, 0.74, 0.72), panel_mask);
 
                 float vertical_surface = clamp(1.0 - abs(normal_dir.z), 0.0, 1.0);
@@ -16162,7 +16359,7 @@ mod fs {
                 vec3 earth = vec3(0.18, 0.12, 0.064) * (0.6 + packed_dirt * 0.54);
                 color = mix(color, color * vec3(0.72, 0.66, 0.54) + earth, ground_contact * smoothstep(0.42, 0.9, packed_dirt) * 0.2);
 
-                color = mix(color, color * vec3(0.82, 0.86, 0.9) + vec3(0.018, 0.035, 0.045), wetness * 0.08 * (1.0 - emissive));
+                color = mix(color, color * vec3(0.82, 0.86, 0.9) + vec3(0.018, 0.035, 0.045), wetness * 0.10 * (1.0 - emissive));
                 return max(color, vec3(0.0));
             }
 
@@ -16217,12 +16414,12 @@ mod fs {
                     in_view_depth
                 );
 
-                vec3 key_dir = normalize(vec3(-0.28, -0.36, 0.89));
+                vec3 key_dir = normalize(vec3(-0.34, -0.42, 0.84));
                 float direct = max(dot(normal_dir, key_dir), 0.0);
                 float back = max(dot(-normal_dir, key_dir), 0.0) * 0.2;
-                float diffuse = 0.4 + max(direct, back) * mix(0.78, 0.5, metallic);
-                vec3 sun_warmth = vec3(1.0, 0.88, 0.68) * direct * 0.18;
-                vec3 sky_fill = vec3(0.52, 0.58, 0.64) * (0.28 + max(normal_dir.z, 0.0) * 0.32);
+                float diffuse = 0.34 + max(direct, back) * mix(0.88, 0.56, metallic);
+                vec3 sun_warmth = vec3(1.0, 0.88, 0.68) * direct * 0.28;
+                vec3 sky_fill = vec3(0.50, 0.57, 0.64) * (0.34 + max(normal_dir.z, 0.0) * 0.36);
                 vec3 lit = surface_color * diffuse + surface_color * sky_fill + surface_color * sun_warmth;
 
                 float spec_power = mix(96.0, 18.0, roughness);
@@ -16237,7 +16434,7 @@ mod fs {
                     vec3(1.0, 3.0, 2.45),
                     vec3(0.48, 0.18, 0.34),
                     8.5,
-                    0.07,
+                    0.035,
                     wetness
                 );
                 vec3 cyan = point_light(
@@ -16246,7 +16443,7 @@ mod fs {
                     vec3(-1.5, 0.5, 0.72),
                     vec3(0.22, 0.42, 0.5),
                     5.2,
-                    0.06,
+                    0.030,
                     wetness
                 );
                 vec3 amber = point_light(
@@ -16254,14 +16451,14 @@ mod fs {
                     normal_dir,
                     vec3(-4.95, -6.9, 1.45),
                     vec3(0.9, 0.55, 0.24),
-                    4.2,
-                    0.12,
+                    4.8,
+                    0.10,
                     wetness
                 );
                 float upward_surface = smoothstep(0.38, 0.92, normal_dir.z);
                 float wet_ground = upward_surface * (1.0 - smoothstep(0.03, 0.22, abs(in_world_position.z)));
-                lit += magenta * (0.03 + wet_ground * 0.08);
-                lit += cyan * (0.025 + wet_ground * 0.06);
+                lit += magenta * (0.012 + wet_ground * 0.034);
+                lit += cyan * (0.010 + wet_ground * 0.028);
                 lit += amber * 0.13;
                 if (frame.dynamic_light_position_radius.w > 0.01 && frame.dynamic_light_color_intensity.w > 0.01) {
                     vec3 dynamic = point_light(
@@ -16273,9 +16470,9 @@ mod fs {
                         frame.dynamic_light_color_intensity.w,
                         wetness
                     );
-                    lit += dynamic * (0.16 + wet_ground * 0.32);
+                    lit += dynamic * (0.12 + wet_ground * 0.22);
                 }
-                lit += surface_color * emissive * (0.74 + in_color.a * 0.36);
+                lit += surface_color * emissive * (0.52 + in_color.a * 0.26);
 
                 vec3 fog_color = frame.atmosphere_color_density.rgb;
                 float fog_density = frame.atmosphere_color_density.w;
@@ -16293,7 +16490,7 @@ mod fs {
 
                 float exposure = frame.camera_exposure_bloom.x;
                 float bloom_strength = frame.camera_exposure_bloom.y;
-                lit += surface_color * emissive * bloom_strength * (0.22 + wetness * 0.18);
+                lit += surface_color * emissive * bloom_strength * (0.10 + wetness * 0.10);
                 lit = filmic_tone_map(lit, exposure);
                 out_color = vec4(lit, in_color.a);
             }
@@ -16380,6 +16577,31 @@ mod tests {
 
         assert_eq!(vertex.material_detail, [2.4, 0.32, 0.8, 0.42]);
         assert_eq!(vertex.generated_cache, [0.0, 0.4, 1.0, 0.72]);
+    }
+
+    #[test]
+    fn natural_surface_quads_emit_stronger_texture_cache_signals() {
+        let mut geometry = WindowSceneGeometry::default();
+
+        geometry.world_quad_with_surface_response(
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+            [0.10, 0.24, 0.08, 1.0],
+            [0.70, 0.0, 0.18, 0.0],
+        );
+
+        let vertex = geometry
+            .vertices
+            .first()
+            .expect("quad should emit vertices");
+        assert!(vertex.material_detail[0] > 1.25);
+        assert!(vertex.material_detail[2] > 0.42);
+        assert!(vertex.material_detail[3] > 0.48);
+        assert!(vertex.generated_cache[0] > 0.34);
+        assert!(vertex.generated_cache[1] > 0.66);
+        assert!(vertex.generated_cache[2] > 0.26);
     }
 
     #[test]
@@ -16621,14 +16843,8 @@ mod tests {
         assert!(geometry.vertices.iter().any(|vertex| {
             vertex.color[0] > 0.5 && vertex.color[1] > 0.6 && vertex.color[2] > 0.7
         }));
-        assert!(
-            geometry
-                .vertices
-                .iter()
-                .any(|vertex| vertex.color[0] == 1.0 && vertex.color[1] == 0.86)
-        );
         assert!(geometry.vertices.iter().any(|vertex| {
-            vertex.color[0] == 1.0 && vertex.color[1] == 0.93 && vertex.color[2] == 0.7
+            vertex.color[0] == 1.0 && vertex.color[1] == 0.82 && vertex.color[2] == 0.56
         }));
         assert!(geometry.vertices.iter().any(|vertex| {
             vertex.color[0] == 0.82 && vertex.color[1] == 0.86 && vertex.color[2] == 0.84
@@ -17900,7 +18116,7 @@ mod tests {
     }
 
     #[test]
-    fn window_alley_weather_adds_animated_rain_steam_and_neon_haze() {
+    fn window_alley_weather_adds_animated_rain_grounded_splashes_and_wisps() {
         let camera = WindowPerspectiveCamera::new([0.0, -3.0, 1.65], 0.0, 0.0);
         let mut first = WindowSceneGeometry::default();
         let mut second = WindowSceneGeometry::default();
@@ -17908,7 +18124,7 @@ mod tests {
         first.add_window_alley_weather(1, camera);
         second.add_window_alley_weather(40, camera);
 
-        assert!(first.vertices.len() > 780);
+        assert!(first.vertices.len() > 680);
         assert_eq!(first.vertices.len(), second.vertices.len());
         assert_eq!(first.indices.len(), first.vertices.len() / 4 * 6);
         assert!(first.vertices.iter().all(|vertex| {
@@ -17923,19 +18139,26 @@ mod tests {
         assert!(first.vertices.iter().any(|vertex| {
             vertex.color[0] >= 0.45
                 && vertex.color[1] >= 0.6
-                && vertex.color[2] >= 0.68
+                && vertex.color[2] >= 0.62
                 && vertex.color[3] < 0.2
         }));
         assert!(first.vertices.iter().any(|vertex| {
             vertex.position[2] <= 0.022
-                && vertex.color == [0.05, 0.12, 0.16, 0.12]
+                && vertex.color == [0.032, 0.078, 0.092, 0.16]
                 && vertex.surface_response == WINDOW_SURFACE_RESPONSE_WET_ROAD
         }));
         assert!(first.vertices.iter().any(|vertex| {
-            vertex.position[2] <= 0.022
-                && vertex.color[0] == 0.38
-                && vertex.color[1] == 0.56
+            vertex.position[2] <= 0.03
+                && vertex.color[0] == 0.44
+                && vertex.color[1] == 0.58
                 && vertex.surface_response == WINDOW_SURFACE_RESPONSE_WET_ROAD
+        }));
+        assert!(!first.vertices.iter().any(|vertex| {
+            vertex.color == [0.05, 0.12, 0.16, 0.12]
+                || (vertex.color[0] == 0.38 && vertex.color[1] == 0.56)
+        }));
+        assert!(!first.vertices.iter().any(|vertex| {
+            vertex.color[3] >= 0.1 && vertex.position[2] > 0.4 && vertex.color[0] == 0.55
         }));
         assert!(
             first
