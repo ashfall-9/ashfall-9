@@ -72,6 +72,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if args
         .iter()
+        .any(|arg| arg == "--capture-v22-golden" || arg == "--capture-golden-v22")
+    {
+        let output_dir = output_dir_arg(&args)
+            .unwrap_or_else(|| std::path::PathBuf::from("target/ashfall_v22_golden"));
+        let report =
+            ashfall::beauty_scene_v22_capture::capture_beauty_v22_golden_scenes(&output_dir)?;
+        println!(
+            "Captured {} V22 golden scene image(s) to {}",
+            report.image_paths.len(),
+            output_dir.display()
+        );
+        for path in report.image_paths {
+            println!("{}", path.display());
+        }
+        println!("{}", report.timing_path.display());
+        for timing in report.timings {
+            println!(
+                "{:?}: render {:.3} ms, write {:.3} ms, total {:.3} ms",
+                timing.biome, timing.render_ms, timing.write_ms, timing.total_ms
+            );
+        }
+        return Ok(());
+    }
+
+    if args
+        .iter()
         .any(|arg| arg == "--headless" || arg == "--demo-log")
     {
         return run_headless_demo(args.iter().any(|arg| {
