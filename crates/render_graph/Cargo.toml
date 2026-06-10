@@ -1,0 +1,13 @@
+[package]
+name = "render_graph"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "render_graph"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+engine_core = { path = "../engine_core" }
+serde.workspace = true

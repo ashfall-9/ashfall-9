@@ -1,0 +1,14 @@
+[package]
+name = "telemetry"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "telemetry"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+engine_core = { path = "../engine_core" }
+serde.workspace = true
+serde_json.workspace = true

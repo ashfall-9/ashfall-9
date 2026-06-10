@@ -1,0 +1,8 @@
+[package]
+name = "renderer_oracle"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "renderer_oracle"
+path = "src/lib.rs"

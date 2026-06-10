@@ -1,0 +1,12 @@
+[package]
+name = "scene_schema"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "scene_schema"
+path = "src/lib.rs"
+
+[dependencies]
+engine_core = { path = "../engine_core" }
+serde.workspace = true

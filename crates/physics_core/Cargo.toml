@@ -1,0 +1,8 @@
+[package]
+name = "physics_core"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "physics_core"
+path = "src/lib.rs"

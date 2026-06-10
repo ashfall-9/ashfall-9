@@ -1,0 +1,8 @@
+[package]
+name = "voice_runtime"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "voice_runtime"
+path = "src/lib.rs"

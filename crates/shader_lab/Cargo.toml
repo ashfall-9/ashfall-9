@@ -1,0 +1,11 @@
+[package]
+name = "shader_lab"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "shader_lab"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "renderer_realtime"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "renderer_realtime"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+engine_core = { path = "../engine_core" }
+image.workspace = true
+rayon.workspace = true
+scene_schema = { path = "../scene_schema" }
+serde.workspace = true

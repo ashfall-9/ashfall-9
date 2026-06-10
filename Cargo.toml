@@ -1,42 +1,43 @@
 [workspace]
 members = [
-    ".",
-    "crates/ashfall-core",
-    "crates/ashfall-rendering",
-    "crates/ashfall-physics",
-    "crates/ashfall-materials",
-    "crates/ashfall-human",
-    "crates/ashfall-ai",
-    "crates/ashfall-voice",
-    "crates/ashfall-worldgen",
-    "crates/ashfall-tools",
+    "crates/app_desktop",
+    "crates/app_headless",
+    "crates/engine_core",
+    "crates/telemetry",
+    "crates/scene_schema",
+    "crates/gfx_vk",
+    "crates/render_graph",
+    "crates/shader_lab",
+    "crates/renderer_realtime",
+    "crates/renderer_oracle",
+    "crates/asset_pipeline",
+    "crates/material_lab",
+    "crates/physics_core",
+    "crates/physics_gpu",
+    "crates/human_gen",
+    "crates/ai_world",
+    "crates/voice_runtime",
+    "crates/eval_lab",
+    "crates/dev_web",
+    "crates/tools_cli",
 ]
 resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = ""
 
-[package]
-name = "ashfall"
-version.workspace = true
-edition.workspace = true
-
-[lib]
-name = "ashfall"
-path = "src/lib.rs"
-
-[[bin]]
-name = "ashfall"
-path = "src/main.rs"
-
-[dependencies]
-ashfall-ai = { path = "crates/ashfall-ai" }
-ashfall-core = { path = "crates/ashfall-core" }
-ashfall-human = { path = "crates/ashfall-human" }
-ashfall-materials = { path = "crates/ashfall-materials" }
-ashfall-physics = { path = "crates/ashfall-physics" }
-ashfall-rendering = { path = "crates/ashfall-rendering" }
-ashfall-tools = { path = "crates/ashfall-tools" }
-ashfall-voice = { path = "crates/ashfall-voice" }
-ashfall-worldgen = { path = "crates/ashfall-worldgen" }
+[workspace.dependencies]
+anyhow = "1.0"
+burn = { version = "0.21.0", default-features = false, features = ["std", "ndarray"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+rayon = "1.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+softbuffer = "0.4"
+vulkano = "0.35.2"
+vulkano-shaders = "0.35.0"
+vulkano-util = "0.35.0"
+winit = "0.30.13"

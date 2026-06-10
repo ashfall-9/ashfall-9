@@ -1,0 +1,16 @@
+[package]
+name = "eval_lab"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "eval_lab"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+burn.workspace = true
+renderer_realtime = { path = "../renderer_realtime" }
+serde.workspace = true
+serde_json.workspace = true
+telemetry = { path = "../telemetry" }

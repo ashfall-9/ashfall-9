@@ -1,2 +1,3 @@
 /target/
-/writeups/
+/eval_runs/
+*.pdb

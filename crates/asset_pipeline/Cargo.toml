@@ -1,0 +1,8 @@
+[package]
+name = "asset_pipeline"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "asset_pipeline"
+path = "src/lib.rs"

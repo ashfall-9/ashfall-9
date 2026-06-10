@@ -1,0 +1,8 @@
+[package]
+name = "physics_gpu"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "physics_gpu"
+path = "src/lib.rs"

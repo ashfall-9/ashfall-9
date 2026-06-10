@@ -1,8 +1,0 @@
-[package]
-name = "ashfall-core"
-version.workspace = true
-edition.workspace = true
-
-[lib]
-name = "ashfall_core"
-path = "src/lib.rs"

@@ -1,0 +1,258 @@
+{
+  "title": "Photorealistic Rust/Vulkan Game Engine Writeups — Improved V4 Set",
+  "format": "markdown documentation set",
+  "generated_utc": "2026-06-08T19:29:04Z",
+  "primary_first_milestone": "sun + atmosphere + volumetric clouds only",
+  "recommended_first_command": "cargo run -p tools_cli -- eval sky --profile high --seed-set locked_001",
+  "sanity_checked": true,
+  "revision": "v4",
+  "source_verified_on": "2026-06-08",
+  "major_corrections": [
+    "Corrected stale Markdown cross-references from V3",
+    "Collapsed duplicated renderer backend/resource-lifetime sections",
+    "Added source-verified dependency notes for Vulkano, winit, Burn, Vulkan, OpenAI APIs, and Evals deprecation",
+    "Added shader ABI and GPU data-layout contract",
+    "Added renderer validation and testing pyramid",
+    "Added evaluation statistics and promotion protocol",
+    "Added first 90 days execution plan",
+    "Added risk register and dependency/scope pivot criteria",
+    "Strengthened AGENTS.md V4 coding-agent rules"
+  ],
+  "files": [
+    {
+      "path": "00_sanity_check_report.md",
+      "bytes": 19173,
+      "sha256": "b5c48afb1940ce64a5cead13e1f5b7024edb927ec07b12d569be72dc8de5d9b5"
+    },
+    {
+      "path": "01_project_vision.md",
+      "bytes": 5146,
+      "sha256": "c2c59df7c6cd174bf0870e6c18496ce8d825e7ccd35a229c9a41f5ff81e5baf3"
+    },
+    {
+      "path": "02_workspace_architecture.md",
+      "bytes": 9117,
+      "sha256": "ac4e24172502b2dd999c466edcdf76afc67e32b565695e80666ff4cefe7e0471"
+    },
+    {
+      "path": "03_core_interfaces.md",
+      "bytes": 6418,
+      "sha256": "a429ac7bdc3894e1914afc8e958e6365a7fe3393bee6155ee7e169c32b60a825"
+    },
+    {
+      "path": "04_vulkan_renderer_spec.md",
+      "bytes": 12335,
+      "sha256": "156e0ebc647b63651bd063278a3360d1af059110b0e1f6cb9bbbbc0f971fb05e"
+    },
+    {
+      "path": "05_clouds_and_sun_milestone.md",
+      "bytes": 7667,
+      "sha256": "6a746207980aa1ce0a86afa047432fae795b5996e2619417853e8e15b9f57648"
+    },
+    {
+      "path": "06_physics_consequence_engine.md",
+      "bytes": 5279,
+      "sha256": "4498db423be3002ac468f2e10b5672ba8ff76e03d4d92b1997c3e7981b6b18c6"
+    },
+    {
+      "path": "07_material_texture_generator.md",
+      "bytes": 5789,
+      "sha256": "e37a1e75f648fc7d0b34fb7c5309941ff52cf9dce136052defb1300bccce4f65"
+    },
+    {
+      "path": "08_human_generator.md",
+      "bytes": 5190,
+      "sha256": "26be0b98bfad3b2e9f593f67f3a57a5221fb11cef0af8bb3daa4575cf11245be"
+    },
+    {
+      "path": "09_ai_characters.md",
+      "bytes": 4129,
+      "sha256": "480ed8e646f68f75a8b97b5142a693b3dc51d0a074f9dca20172139af4fde050"
+    },
+    {
+      "path": "10_voice_personas.md",
+      "bytes": 4277,
+      "sha256": "d9b3a9c111c8a3c397cb12718614ebc9b94eddb07b7c5726ebe1b50c1ddc871c"
+    },
+    {
+      "path": "11_evaluation_feedback_loop.md",
+      "bytes": 7520,
+      "sha256": "1f6d9104fe431649fda54a23ad695784f2e88d47cec88dbf1369a15640d3d18b"
+    },
+    {
+      "path": "12_performance_development_environment.md",
+      "bytes": 4200,
+      "sha256": "dc454092194b7f65365edad711f842707f10da97c15ba9c73cdbaf24ce680c49"
+    },
+    {
+      "path": "13_asset_scene_interchange.md",
+      "bytes": 3148,
+      "sha256": "658bcb2f62577e398a000f869d42360cf4dfb59a3defff7772e50cb28eeb3bc6"
+    },
+    {
+      "path": "14_component_rnd_roadmap.md",
+      "bytes": 3876,
+      "sha256": "a2061474aacb809f63b506760bdeef76fc11eb4d7ff2fd6ce0ee0b4308803723"
+    },
+    {
+      "path": "15_first_implementation_sequence.md",
+      "bytes": 4140,
+      "sha256": "9409fa83bce449abe603355c8c9b9d32a7ac5c842f26218e2322937f54160d4e"
+    },
+    {
+      "path": "16_rust_api_contracts.md",
+      "bytes": 13827,
+      "sha256": "209fd07ae8143ab6ffbd139f7fe3404337df78203e3ea65b773e3c12b7ff4718"
+    },
+    {
+      "path": "17_codex_agent_workflow.md",
+      "bytes": 5071,
+      "sha256": "59c326bd13082607f618f6117f30fbab2790c9aac88958f72085519b584d145c"
+    },
+    {
+      "path": "18_references_and_terms.md",
+      "bytes": 17293,
+      "sha256": "2fb34c76a3940d9faf625d83f52d4e153a317e71ecc8fed2cf751895c11aa211"
+    },
+    {
+      "path": "19_revision_2_change_log.md",
+      "bytes": 2445,
+      "sha256": "0ffb3ab5dbbb37dbb70c7c73d9db9cd94810d1ef68079d4bc8500df1ff72d068"
+    },
+    {
+      "path": "20_interface_compatibility_matrix.md",
+      "bytes": 3080,
+      "sha256": "34f2003fc0d25b604df634ef39778a3a627de47a02420ec56f6b85531081edf5"
+    },
+    {
+      "path": "21_sky_eval_rubric_templates.md",
+      "bytes": 3512,
+      "sha256": "2a0f5689db85f95489247a2b96f39e7a68319faf046ddc1750ecfb9da3198815"
+    },
+    {
+      "path": "22_revision_3_sanity_report.md",
+      "bytes": 8311,
+      "sha256": "916a771956dcabbfa715bea5d00a761a35b9f6e4528f1ef1225df2bebe086082"
+    },
+    {
+      "path": "23_vulkan_winit_surface_lifecycle.md",
+      "bytes": 5414,
+      "sha256": "0c5a2619c8286570275788450052ba01ee49dbc382f02a5e8949853ab77cb8a5"
+    },
+    {
+      "path": "24_gpu_resource_lifetime_and_sync.md",
+      "bytes": 5570,
+      "sha256": "6962dd1203e8e78f5f190e79cc66ca7ccecfb0ab549c2340a7b57e466a0675f3"
+    },
+    {
+      "path": "25_dependency_spike_plan.md",
+      "bytes": 3754,
+      "sha256": "a3e43b178f1a591e86d10d8f4455df196c24aaa6192e7f0f92419469ea89e99d"
+    },
+    {
+      "path": "26_runtime_quality_profiles_and_budgets.md",
+      "bytes": 3760,
+      "sha256": "b611c4f92bb670438c0dc0fe9bcf51b30ab5e661335a381c466be6cafbd0caa6"
+    },
+    {
+      "path": "27_release_gate_playbook.md",
+      "bytes": 3266,
+      "sha256": "ee1612860a25cfc2a614da87c40782300f08005c708c0f6891a74346a7e4f9de"
+    },
+    {
+      "path": "28_dependency_and_capability_matrix.md",
+      "bytes": 7845,
+      "sha256": "8128b5d51d73802b4741cfeba1fbf32a1d4040832786e142cfdd180707718954"
+    },
+    {
+      "path": "29_sky_certification_rubric.md",
+      "bytes": 7758,
+      "sha256": "522135a00fd4b01fc496a6ba9e2bdb7328c38af0e799ac15fbbe612b6d590a89"
+    },
+    {
+      "path": "30_artifact_and_schema_contracts.md",
+      "bytes": 6339,
+      "sha256": "02cfad567df7024caa1af5f25eddba78f42d60a2b9267d74f03e893723ff1361"
+    },
+    {
+      "path": "31_security_safety_and_data_governance.md",
+      "bytes": 6268,
+      "sha256": "3e9901e75a3955336a85628bd79ca6a20737cc3aa2f23cbd7acf2c4d180f536d"
+    },
+    {
+      "path": "32_component_acceptance_checklists.md",
+      "bytes": 6186,
+      "sha256": "ae5949acf3274de68d36f8e154daf75cc63238f35ede38ec4d4c372dee675204"
+    },
+    {
+      "path": "33_first_epics_and_backlog.md",
+      "bytes": 9884,
+      "sha256": "8d09df0196bf38dceab982e22a3bd6c8428a04f20f45bc1e84c6737728692d2d"
+    },
+    {
+      "path": "34_runtime_data_flow_and_threading.md",
+      "bytes": 4247,
+      "sha256": "2320eaa558303c07fed052de98f02a28e2798b1003e554e1b8dd872cfbf63b7d"
+    },
+    {
+      "path": "35_eval_dataset_and_judge_protocol.md",
+      "bytes": 3651,
+      "sha256": "d29737041969718da24d6ee65294346176d2989b4de793bab79a301e6a0ff3b7"
+    },
+    {
+      "path": "36_revision_3_change_log.md",
+      "bytes": 2671,
+      "sha256": "006f4a0a72c79571e48f2c262feb35fd37f3de28df44bc4e27034874a1a8ea27"
+    },
+    {
+      "path": "37_revision_4_sanity_report.md",
+      "bytes": 7487,
+      "sha256": "1665c54421ea9fd43477a50ea0282f7f44df0d78ccd876d828f02506cb01786b"
+    },
+    {
+      "path": "38_source_verified_dependency_notes.md",
+      "bytes": 5792,
+      "sha256": "651a2d412904ea60e9be94595b220db58d8c898ad59857ad4f923cb2661bf8e4"
+    },
+    {
+      "path": "39_renderer_validation_and_testing_plan.md",
+      "bytes": 5669,
+      "sha256": "22b917911d08bda6a9503f558e95a02bedbc2a6537046b05bbe59948267f0070"
+    },
+    {
+      "path": "40_shader_abi_and_gpu_data_layout.md",
+      "bytes": 5113,
+      "sha256": "67a88afc39e8cc98c2a2e6d2c6d2951effe23ce7df2e61942fc0970ce60b96ab"
+    },
+    {
+      "path": "41_eval_statistics_and_promotion_protocol.md",
+      "bytes": 4790,
+      "sha256": "7383e4cad94aa0ba047c9e0afbf8f2f27bb2bab38cdcfc8e695bb471f55cb6bd"
+    },
+    {
+      "path": "42_first_90_days_execution_plan.md",
+      "bytes": 4604,
+      "sha256": "ef8ea7ed494af4d7b54c5a406da6f917671e7f818b0d761147bb6accf070a7ef"
+    },
+    {
+      "path": "43_risk_register_and_kill_criteria.md",
+      "bytes": 5330,
+      "sha256": "ff883986f779dd1b5c131956deb3f7fc067ed7e8a00a2187c5b9272b83e28f55"
+    },
+    {
+      "path": "44_revision_4_change_log.md",
+      "bytes": 2214,
+      "sha256": "11ed50b079a76d293d1803d5666196834957e32f413a667d09e64690054e9400"
+    },
+    {
+      "path": "AGENTS.md",
+      "bytes": 5951,
+      "sha256": "9a4b8e3140733844deaac7922a593a1d3608248136aac3c6195b096ac6533854"
+    },
+    {
+      "path": "README.md",
+      "bytes": 7728,
+      "sha256": "06c5a612461939b483865b747321c4b3b2bbd835201a3b179ae7745220c4984a"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+[package]
+name = "dev_web"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "dev_web"
+path = "src/lib.rs"

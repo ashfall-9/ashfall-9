@@ -1,0 +1,18 @@
+[package]
+name = "app_headless"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+engine_core = { path = "../engine_core" }
+eval_lab = { path = "../eval_lab" }
+gfx_vk = { path = "../gfx_vk" }
+renderer_realtime = { path = "../renderer_realtime" }
+scene_schema = { path = "../scene_schema" }
+serde.workspace = true
+telemetry = { path = "../telemetry" }
+
+[[bin]]
+name = "app_headless"
+path = "src/main.rs"

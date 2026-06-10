@@ -1,0 +1,15 @@
+[package]
+name = "gfx_vk"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "gfx_vk"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+engine_core = { path = "../engine_core" }
+serde.workspace = true
+vulkano.workspace = true
+vulkano-util.workspace = true

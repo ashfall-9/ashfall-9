@@ -1,0 +1,8 @@
+[package]
+name = "material_lab"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "material_lab"
+path = "src/lib.rs"

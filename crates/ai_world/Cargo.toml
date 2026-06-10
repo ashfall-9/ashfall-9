@@ -1,0 +1,8 @@
+[package]
+name = "ai_world"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "ai_world"
+path = "src/lib.rs"

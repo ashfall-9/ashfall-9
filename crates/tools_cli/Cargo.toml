@@ -1,0 +1,13 @@
+[package]
+name = "tools_cli"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+eval_lab = { path = "../eval_lab" }
+shader_lab = { path = "../shader_lab" }
+
+[[bin]]
+name = "tools_cli"
+path = "src/main.rs"

@@ -1,0 +1,21 @@
+[package]
+name = "app_desktop"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+engine_core = { path = "../engine_core" }
+eval_lab = { path = "../eval_lab" }
+gfx_vk = { path = "../gfx_vk" }
+renderer_realtime = { path = "../renderer_realtime" }
+scene_schema = { path = "../scene_schema" }
+softbuffer.workspace = true
+vulkano.workspace = true
+vulkano-shaders.workspace = true
+vulkano-util.workspace = true
+winit.workspace = true
+
+[[bin]]
+name = "app_desktop"
+path = "src/main.rs"
