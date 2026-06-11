@@ -385,9 +385,11 @@ impl GpuSkyGameApp {
         self.pitch_radians = (self.pitch_radians
             + axis(self.input.look_up, self.input.look_down) * 1.7 * dt_s)
             .clamp(-1.2, 1.2);
-        self.yaw_radians += self.input.mouse_delta[0] * 0.0025;
-        self.pitch_radians =
-            (self.pitch_radians - self.input.mouse_delta[1] * 0.0025).clamp(-1.2, 1.2);
+        const MOUSE_DELTA_CLAMP_PX: f32 = 96.0;
+        let mouse_dx = self.input.mouse_delta[0].clamp(-MOUSE_DELTA_CLAMP_PX, MOUSE_DELTA_CLAMP_PX);
+        let mouse_dy = self.input.mouse_delta[1].clamp(-MOUSE_DELTA_CLAMP_PX, MOUSE_DELTA_CLAMP_PX);
+        self.yaw_radians += mouse_dx * 0.0025;
+        self.pitch_radians = (self.pitch_radians - mouse_dy * 0.0025).clamp(-1.2, 1.2);
         self.input.mouse_delta = [0.0, 0.0];
 
         let forward = [self.yaw_radians.sin(), 0.0, self.yaw_radians.cos()];
@@ -689,6 +691,7 @@ layout(push_constant) uniform SkyPushConstants {
 
 const float PI = 3.14159265358979323846;
 const int PRIMARY_STEPS_MIN = 22;
+const int PRIMARY_STEPS_LAYER_MIN = 28;
 const int PRIMARY_STEPS_MAX = 34;
 const int SHADOW_STEPS = 1;
 const float CLOUD_BASE_M = 1150.0;
@@ -697,7 +700,7 @@ const float CLOUD_LAYER_THICKNESS_M = CLOUD_TOP_M - CLOUD_BASE_M;
 const float CLOUD_MAX_DISTANCE_M = 42000.0;
 const float CLOUD_MAX_MARCH_SEGMENT_M = 14000.0;
 const float CLOUD_TARGET_STEP_M = 315.0;
-const float CLOUD_HORIZON_RAY_EPS = 0.035;
+const float CLOUD_PARALLEL_RAY_EPS = 0.0008;
 const float MIN_TRANSMITTANCE = 0.032;
 
 float saturate(float value) {
@@ -710,6 +713,21 @@ vec3 saturate3(vec3 value) {
 
 float remap01(float value, float low, float high) {
     return saturate((value - low) / max(high - low, 0.00001));
+}
+
+vec3 safe_normalize3(vec3 value, vec3 fallback) {
+    float len2 = dot(value, value);
+    if (len2 > 0.000000001) {
+        return value * inversesqrt(len2);
+    }
+    return fallback;
+}
+
+vec3 finite_or(vec3 value, vec3 fallback) {
+    if (any(isnan(value)) || any(isinf(value))) {
+        return fallback;
+    }
+    return value;
 }
 
 float hash11(float value) {
@@ -851,13 +869,14 @@ float henyey_greenstein(float cos_theta, float g) {
     return (1.0 - g2) / (4.0 * PI * denom);
 }
 
-float interleaved_gradient_noise(vec2 pixel, float frameish) {
-    return fract(52.9829189 * fract(0.06711056 * pixel.x + 0.00583715 * pixel.y + frameish * 0.071));
+float interleaved_gradient_noise(vec2 pixel, float seed) {
+    return fract(52.9829189 * fract(0.06711056 * pixel.x + 0.00583715 * pixel.y + seed * 0.071));
 }
 
-bool ray_cloud_layer_interval(vec3 origin, vec3 direction, out float t0, out float t1) {
-    if (abs(direction.y) < CLOUD_HORIZON_RAY_EPS) {
-        if (origin.y < CLOUD_BASE_M || origin.y > CLOUD_TOP_M) {
+bool stable_ray_cloud_layer_interval(vec3 origin, vec3 direction, out float t0, out float t1) {
+    bool inside_layer = origin.y >= CLOUD_BASE_M && origin.y <= CLOUD_TOP_M;
+    if (abs(direction.y) < CLOUD_PARALLEL_RAY_EPS) {
+        if (!inside_layer) {
             t0 = 0.0;
             t1 = 0.0;
             return false;
@@ -872,15 +891,21 @@ bool ray_cloud_layer_interval(vec3 origin, vec3 direction, out float t0, out flo
     float near_t = min(t_base, t_top);
     float far_t = max(t_base, t_top);
 
-    t0 = max(near_t, 0.0);
-    t1 = min(far_t, CLOUD_MAX_DISTANCE_M);
-    return t1 > t0;
+    float entry = max(near_t, 0.0);
+    float exit = min(far_t, CLOUD_MAX_DISTANCE_M);
+    if (inside_layer) {
+        entry = 0.0;
+    }
+
+    t0 = entry;
+    t1 = exit;
+    return t1 > t0 && t0 < CLOUD_MAX_DISTANCE_M;
 }
 
 vec2 wind_offset_m(float time_seconds, float seed) {
     float seed_angle = mix(-0.45, 0.45, hash11(seed + 2.7));
-    vec2 direction = normalize(vec2(cos(seed_angle), sin(seed_angle)) + vec2(0.85, 0.28));
-    return direction * time_seconds * 28.0;
+    vec3 direction = safe_normalize3(vec3(cos(seed_angle) + 0.85, sin(seed_angle) + 0.28, 0.0), vec3(1.0, 0.0, 0.0));
+    return direction.xy * time_seconds * 28.0;
 }
 
 float cloud_height01(vec3 world_position) {
@@ -931,7 +956,34 @@ float cloud_coverage_field_fast(vec2 world_xz, float time_seconds, float seed) {
     return smoothstep(0.0, 1.0, mask);
 }
 
-float raw_cloud_density(vec3 world_position) {
+float fast_layer_coverage(vec3 world_position) {
+    float h = cloud_height01(world_position);
+    if (h <= 0.0 || h >= 1.0) {
+        return 0.0;
+    }
+    float vertical = smoothstep(0.010, 0.080, h) * (1.0 - smoothstep(0.88, 1.00, h));
+    return cloud_coverage_field_fast(world_position.xz, pc.camera_up_time.w, pc.camera_position_seed.w) * vertical;
+}
+
+float ray_coverage_probe(vec3 origin, vec3 direction, float t0, float segment) {
+    float c = 0.0;
+    bool inside_layer = origin.y >= CLOUD_BASE_M && origin.y <= CLOUD_TOP_M;
+    if (inside_layer) {
+        c = max(c, fast_layer_coverage(origin) * 0.75);
+        c = max(c, fast_layer_coverage(origin + direction * (t0 + segment * 0.035)));
+        c = max(c, fast_layer_coverage(origin + direction * (t0 + segment * 0.140)));
+        c = max(c, fast_layer_coverage(origin + direction * (t0 + segment * 0.330)));
+        c = max(c, fast_layer_coverage(origin + direction * (t0 + segment * 0.590)));
+        c = max(c, fast_layer_coverage(origin + direction * (t0 + segment * 0.850)));
+    } else {
+        c = max(c, fast_layer_coverage(origin + direction * (t0 + segment * 0.230)));
+        c = max(c, fast_layer_coverage(origin + direction * (t0 + segment * 0.540)));
+        c = max(c, fast_layer_coverage(origin + direction * (t0 + segment * 0.820)));
+    }
+    return c;
+}
+
+float raw_cloud_density_lod(vec3 world_position, float distance_m) {
     float h = cloud_height01(world_position);
     if (h <= 0.0 || h >= 1.0) {
         return 0.0;
@@ -940,6 +992,8 @@ float raw_cloud_density(vec3 world_position) {
     float time_seconds = pc.camera_up_time.w;
     float seed = pc.camera_position_seed.w;
     float density_setting = saturate(pc.resolution_weather.w);
+    float far_lod = smoothstep(8500.0, 26000.0, distance_m);
+    float mid_lod = smoothstep(4200.0, 15000.0, distance_m);
 
     vec2 wind = wind_offset_m(time_seconds, seed);
     float coverage_mask = cloud_coverage_field(world_position.xz, time_seconds, seed);
@@ -968,7 +1022,7 @@ float raw_cloud_density(vec3 world_position) {
 
     float primary_shape = coverage_mask * profile;
     primary_shape += (billow_low - 0.46) * 0.42 * profile;
-    primary_shape += (billow_mid - 0.50) * 0.19 * profile;
+    primary_shape += (billow_mid - 0.50) * 0.19 * profile * (1.0 - far_lod * 0.66);
 
     float density = remap01(primary_shape, 0.12, 0.88);
 
@@ -978,16 +1032,17 @@ float raw_cloud_density(vec3 world_position) {
     float top_evaporation = smoothstep(0.56, 0.98, h);
     float low_cells = worley3(q * 3.55 + vec3(seed * 0.031, 2.0, time_seconds * 0.013));
     float high_cells = value_noise3(q * 8.20 + vec3(8.0, seed * 0.043, -time_seconds * 0.031));
-    float cellular_erosion = smoothstep(0.18, 0.72, low_cells) * 0.34;
-    cellular_erosion += smoothstep(0.38, 0.86, high_cells) * mix(0.12, 0.24, top_evaporation);
+    float cellular_erosion = smoothstep(0.18, 0.72, low_cells) * 0.34 * (1.0 - far_lod * 0.28);
+    cellular_erosion += smoothstep(0.38, 0.86, high_cells) * mix(0.12, 0.24, top_evaporation) * (1.0 - far_lod);
     density -= cellular_erosion * edge;
 
     // Flat, heavy underside plus soft high-detail rim texture.
     float underside = 1.0 - smoothstep(0.035, 0.20, h);
     density += underside * coverage_mask * 0.12;
-    density += (fine_noise - 0.52) * 0.075 * edge * (1.0 - underside * 0.35);
+    density += (fine_noise - 0.52) * 0.075 * edge * (1.0 - underside * 0.35) * (1.0 - mid_lod);
 
     // Let the requested density control thickness, not specular brightness.
+    density = mix(density, smoothstep(0.055, 0.90, density), far_lod * 0.58);
     density *= mix(0.72, 1.46, density_setting);
     return saturate(density);
 }
@@ -1018,19 +1073,23 @@ float shadow_cloud_density(vec3 world_position) {
     return saturate(density * mix(0.68, 1.30, saturate(pc.resolution_weather.w)));
 }
 float cloud_shadow_transmittance(vec3 world_position, vec3 sun_direction) {
+    vec3 start = world_position + sun_direction * 42.0;
     float t0;
     float t1;
-    if (!ray_cloud_layer_interval(world_position + sun_direction * 35.0, sun_direction, t0, t1)) {
+    if (!stable_ray_cloud_layer_interval(start, sun_direction, t0, t1)) {
         return 1.0;
     }
 
-    float max_distance = min(t1, 8500.0);
+    float max_distance = min(max(t1 - t0, 0.0), 8500.0);
+    if (max_distance <= 1.0) {
+        return 1.0;
+    }
     float step_length = max_distance / float(SHADOW_STEPS);
-    float t = step_length * 0.62;
+    float t = t0 + step_length * 0.62;
     float optical_depth = 0.0;
 
     for (int i = 0; i < SHADOW_STEPS; i++) {
-        vec3 p = world_position + sun_direction * t;
+        vec3 p = start + sun_direction * t;
         float shadow_density = shadow_cloud_density(p);
         optical_depth += shadow_density * step_length;
         t += step_length;
@@ -1102,7 +1161,8 @@ vec3 cloud_lighting(vec3 world_position, vec3 view_to_camera, vec3 sun_direction
     lighting += sun_color * silver_lining * 0.48;
 
     float aerial = saturate(1.0 - exp(-distance_m * 0.000035));
-    vec3 air_color = sky_radiance(normalize(world_position - pc.camera_position_seed.xyz), sun_direction);
+    vec3 air_dir = safe_normalize3(world_position - pc.camera_position_seed.xyz, -view_to_camera);
+    vec3 air_color = sky_radiance(air_dir, sun_direction);
     lighting = mix(lighting, air_color * 0.92, aerial * 0.42);
 
     return lighting * vec3(0.96, 0.97, 0.95);
@@ -1111,44 +1171,47 @@ vec3 cloud_lighting(vec3 world_position, vec3 view_to_camera, vec3 sun_direction
 void main() {
     vec2 ndc = vec2(in_uv.x * 2.0 - 1.0, (1.0 - in_uv.y) * 2.0 - 1.0);
 
-    vec3 camera_forward = normalize(pc.camera_forward_tan_x.xyz);
-    vec3 camera_right = normalize(pc.camera_right_tan_y.xyz);
-    vec3 camera_up = normalize(pc.camera_up_time.xyz);
+    vec3 camera_forward = safe_normalize3(pc.camera_forward_tan_x.xyz, vec3(0.0, 0.0, 1.0));
+    vec3 camera_right = safe_normalize3(pc.camera_right_tan_y.xyz, vec3(1.0, 0.0, 0.0));
+    vec3 camera_up = safe_normalize3(pc.camera_up_time.xyz, vec3(0.0, 1.0, 0.0));
     float tan_x = pc.camera_forward_tan_x.w;
     float tan_y = pc.camera_right_tan_y.w;
     vec3 origin = pc.camera_position_seed.xyz;
-    vec3 sun_direction = normalize(pc.sun_direction_radius.xyz);
+    vec3 sun_direction = safe_normalize3(pc.sun_direction_radius.xyz, vec3(0.2, 0.8, 0.4));
 
-    vec3 ray_direction = normalize(camera_forward + camera_right * ndc.x * tan_x + camera_up * ndc.y * tan_y);
+    vec3 ray_direction = safe_normalize3(
+        camera_forward + camera_right * ndc.x * tan_x + camera_up * ndc.y * tan_y,
+        camera_forward
+    );
     vec3 background = sky_radiance(ray_direction, sun_direction);
     vec3 color = background;
-    bool camera_inside_layer = origin.y > CLOUD_BASE_M && origin.y < CLOUD_TOP_M;
-    float camera_density = 0.0;
-    if (camera_inside_layer) {
-        camera_density = raw_cloud_density(origin);
-    }
-    bool camera_inside_cloud = camera_density > 0.045;
+    bool camera_inside_layer = origin.y >= CLOUD_BASE_M && origin.y <= CLOUD_TOP_M;
+    float camera_density = camera_inside_layer ? raw_cloud_density_lod(origin, 0.0) : 0.0;
+    bool camera_inside_cloud = camera_density > 0.036;
 
     float t0;
     float t1;
-    if (ray_cloud_layer_interval(origin, ray_direction, t0, t1)) {
+    if (stable_ray_cloud_layer_interval(origin, ray_direction, t0, t1)) {
         float segment = min(max(t1 - t0, 1.0), CLOUD_MAX_MARCH_SEGMENT_M);
         t1 = t0 + segment;
-        float coarse_t_a = t0 + segment * 0.28;
-        float coarse_t_b = t0 + segment * 0.68;
-        float coarse_coverage = max(
-            cloud_coverage_field_fast((origin + ray_direction * coarse_t_a).xz, pc.camera_up_time.w, pc.camera_position_seed.w),
-            cloud_coverage_field_fast((origin + ray_direction * coarse_t_b).xz, pc.camera_up_time.w, pc.camera_position_seed.w)
-        );
+        float coarse_coverage = ray_coverage_probe(origin, ray_direction, t0, segment);
 
-        if (camera_inside_cloud || coarse_coverage > 0.006) {
+        float gate_threshold = camera_inside_layer ? 0.0014 : 0.0055;
+        if (camera_inside_cloud || coarse_coverage > gate_threshold) {
             float ground_view = 1.0 - smoothstep(CLOUD_BASE_M * 0.45, CLOUD_BASE_M * 0.98, origin.y);
             float far_segment = smoothstep(6200.0, 11200.0, segment);
             int step_count = int(clamp(ceil(segment / CLOUD_TARGET_STEP_M), float(PRIMARY_STEPS_MIN), float(PRIMARY_STEPS_MAX)));
             step_count = int(mix(float(PRIMARY_STEPS_MIN), float(step_count), max(ground_view, far_segment)));
+            if (camera_inside_layer) {
+                step_count = max(step_count, PRIMARY_STEPS_LAYER_MIN);
+            }
             float step_length = segment / float(step_count);
             float jitter = interleaved_gradient_noise(gl_FragCoord.xy, pc.camera_position_seed.w);
-            float t = t0 + step_length * jitter;
+            float jitter_phase = camera_inside_layer ? (0.10 + 0.35 * jitter) : (0.18 + 0.64 * jitter);
+            float t = t0 + step_length * jitter_phase;
+            if (camera_inside_layer) {
+                t = max(t0 + 8.0, min(t, t0 + min(step_length * 0.45, 96.0)));
+            }
 
             vec3 accumulated = vec3(0.0);
             float transmittance = 1.0;
@@ -1164,10 +1227,11 @@ void main() {
                 }
 
                 vec3 p = origin + ray_direction * t;
-                float density = raw_cloud_density(p);
+                float density = raw_cloud_density_lod(p, t);
 
                 if (density > 0.0015) {
-                    float optical_depth = density * extinction * step_length;
+                    float near_layer_boost = camera_inside_layer ? mix(1.16, 1.0, smoothstep(400.0, 2400.0, t)) : 1.0;
+                    float optical_depth = density * extinction * step_length * near_layer_boost;
                     float alpha = 1.0 - exp(-optical_depth);
                     vec3 lit_cloud = cloud_lighting(p, -ray_direction, sun_direction, density, t);
                     accumulated += transmittance * alpha * lit_cloud;
@@ -1187,13 +1251,15 @@ void main() {
 
     if (camera_inside_cloud) {
         vec3 inside_fog = mix(vec3(0.74, 0.79, 0.84), vec3(0.88, 0.89, 0.86), saturate(ray_direction.y * 0.5 + 0.5));
-        float fog_alpha = smoothstep(0.045, 0.24, camera_density) * 0.46;
+        float fog_alpha = smoothstep(0.036, 0.22, camera_density) * 0.42;
         color = mix(color, inside_fog, fog_alpha);
     }
 
+    color = finite_or(color, background);
+    color = max(color, vec3(0.0));
     color = aces(color);
-    color = pow(color, vec3(1.0 / 2.2));
-    out_color = vec4(saturate3(color), 1.0);
+    color = pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
+    out_color = vec4(saturate3(finite_or(color, background)), 1.0);
 }
 "#,
     }
