@@ -688,12 +688,16 @@ layout(push_constant) uniform SkyPushConstants {
 } pc;
 
 const float PI = 3.14159265358979323846;
-const int PRIMARY_STEPS = 24;
+const int PRIMARY_STEPS_MIN = 22;
+const int PRIMARY_STEPS_MAX = 34;
 const int SHADOW_STEPS = 1;
 const float CLOUD_BASE_M = 1150.0;
 const float CLOUD_TOP_M = 4550.0;
 const float CLOUD_LAYER_THICKNESS_M = CLOUD_TOP_M - CLOUD_BASE_M;
 const float CLOUD_MAX_DISTANCE_M = 42000.0;
+const float CLOUD_MAX_MARCH_SEGMENT_M = 14000.0;
+const float CLOUD_TARGET_STEP_M = 315.0;
+const float CLOUD_HORIZON_RAY_EPS = 0.035;
 const float MIN_TRANSMITTANCE = 0.032;
 
 float saturate(float value) {
@@ -852,14 +856,14 @@ float interleaved_gradient_noise(vec2 pixel, float frameish) {
 }
 
 bool ray_cloud_layer_interval(vec3 origin, vec3 direction, out float t0, out float t1) {
-    if (abs(direction.y) < 0.0001) {
+    if (abs(direction.y) < CLOUD_HORIZON_RAY_EPS) {
         if (origin.y < CLOUD_BASE_M || origin.y > CLOUD_TOP_M) {
             t0 = 0.0;
             t1 = 0.0;
             return false;
         }
         t0 = 0.0;
-        t1 = CLOUD_MAX_DISTANCE_M;
+        t1 = min(CLOUD_MAX_DISTANCE_M, CLOUD_MAX_MARCH_SEGMENT_M);
         return true;
     }
 
@@ -1118,11 +1122,18 @@ void main() {
     vec3 ray_direction = normalize(camera_forward + camera_right * ndc.x * tan_x + camera_up * ndc.y * tan_y);
     vec3 background = sky_radiance(ray_direction, sun_direction);
     vec3 color = background;
+    bool camera_inside_layer = origin.y > CLOUD_BASE_M && origin.y < CLOUD_TOP_M;
+    float camera_density = 0.0;
+    if (camera_inside_layer) {
+        camera_density = raw_cloud_density(origin);
+    }
+    bool camera_inside_cloud = camera_density > 0.045;
 
     float t0;
     float t1;
     if (ray_cloud_layer_interval(origin, ray_direction, t0, t1)) {
-        float segment = max(t1 - t0, 1.0);
+        float segment = min(max(t1 - t0, 1.0), CLOUD_MAX_MARCH_SEGMENT_M);
+        t1 = t0 + segment;
         float coarse_t_a = t0 + segment * 0.28;
         float coarse_t_b = t0 + segment * 0.68;
         float coarse_coverage = max(
@@ -1130,9 +1141,13 @@ void main() {
             cloud_coverage_field_fast((origin + ray_direction * coarse_t_b).xz, pc.camera_up_time.w, pc.camera_position_seed.w)
         );
 
-        if (coarse_coverage > 0.006) {
-            float step_length = segment / float(PRIMARY_STEPS);
-            float jitter = interleaved_gradient_noise(gl_FragCoord.xy, pc.camera_up_time.w);
+        if (camera_inside_cloud || coarse_coverage > 0.006) {
+            float ground_view = 1.0 - smoothstep(CLOUD_BASE_M * 0.45, CLOUD_BASE_M * 0.98, origin.y);
+            float far_segment = smoothstep(6200.0, 11200.0, segment);
+            int step_count = int(clamp(ceil(segment / CLOUD_TARGET_STEP_M), float(PRIMARY_STEPS_MIN), float(PRIMARY_STEPS_MAX)));
+            step_count = int(mix(float(PRIMARY_STEPS_MIN), float(step_count), max(ground_view, far_segment)));
+            float step_length = segment / float(step_count);
+            float jitter = interleaved_gradient_noise(gl_FragCoord.xy, pc.camera_position_seed.w);
             float t = t0 + step_length * jitter;
 
             vec3 accumulated = vec3(0.0);
@@ -1140,7 +1155,10 @@ void main() {
             float density_setting = saturate(pc.resolution_weather.w);
             float extinction = mix(0.00042, 0.00105, density_setting);
 
-            for (int i = 0; i < PRIMARY_STEPS; i++) {
+            for (int i = 0; i < PRIMARY_STEPS_MAX; i++) {
+                if (i >= step_count) {
+                    break;
+                }
                 if (t > t1) {
                     break;
                 }
@@ -1165,6 +1183,12 @@ void main() {
 
             color = accumulated + background * transmittance;
         }
+    }
+
+    if (camera_inside_cloud) {
+        vec3 inside_fog = mix(vec3(0.74, 0.79, 0.84), vec3(0.88, 0.89, 0.86), saturate(ray_direction.y * 0.5 + 0.5));
+        float fog_alpha = smoothstep(0.045, 0.24, camera_density) * 0.46;
+        color = mix(color, inside_fog, fog_alpha);
     }
 
     color = aces(color);
