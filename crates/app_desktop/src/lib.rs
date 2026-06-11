@@ -688,13 +688,13 @@ layout(push_constant) uniform SkyPushConstants {
 } pc;
 
 const float PI = 3.14159265358979323846;
-const int PRIMARY_STEPS = 64;
-const int SHADOW_STEPS = 5;
+const int PRIMARY_STEPS = 32;
+const int SHADOW_STEPS = 2;
 const float CLOUD_BASE_M = 1150.0;
 const float CLOUD_TOP_M = 4550.0;
 const float CLOUD_LAYER_THICKNESS_M = CLOUD_TOP_M - CLOUD_BASE_M;
-const float CLOUD_MAX_DISTANCE_M = 82000.0;
-const float MIN_TRANSMITTANCE = 0.012;
+const float CLOUD_MAX_DISTANCE_M = 52000.0;
+const float MIN_TRANSMITTANCE = 0.024;
 
 float saturate(float value) {
     return clamp(value, 0.0, 1.0);
@@ -776,7 +776,7 @@ float fbm2(vec2 value) {
     float amplitude = 0.5;
     float norm = 0.0;
     mat2 octave = mat2(1.61, 1.08, -1.08, 1.61);
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 4; i++) {
         sum += value_noise2(value) * amplitude;
         norm += amplitude;
         value = octave * value + vec2(13.17, 7.31);
@@ -789,7 +789,7 @@ float fbm3(vec3 value) {
     float sum = 0.0;
     float amplitude = 0.5;
     float norm = 0.0;
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 4; i++) {
         sum += value_noise3(value) * amplitude;
         norm += amplitude;
         value = value * 2.03 + vec3(17.13, 7.71, 31.41);
@@ -972,6 +972,31 @@ float raw_cloud_density(vec3 world_position) {
     return saturate(density);
 }
 
+float shadow_cloud_density(vec3 world_position) {
+    float h = cloud_height01(world_position);
+    if (h <= 0.0 || h >= 1.0) {
+        return 0.0;
+    }
+
+    float time_seconds = pc.camera_up_time.w;
+    float seed = pc.camera_position_seed.w;
+    float coverage_mask = cloud_coverage_field(world_position.xz, time_seconds, seed);
+    if (coverage_mask <= 0.001) {
+        return 0.0;
+    }
+
+    float profile = vertical_density_profile(h);
+    vec2 wind = wind_offset_m(time_seconds, seed);
+    vec3 q = vec3(
+        (world_position.x + wind.x) * 0.00034,
+        (world_position.y - CLOUD_BASE_M) * 0.00058,
+        (world_position.z + wind.y) * 0.00034
+    );
+    q += vec3(seed * 0.013, 0.0, seed * 0.019);
+    float broad_billow = value_noise3(q * 3.2 + vec3(seed * 0.029, -time_seconds * 0.020, 5.1));
+    float density = coverage_mask * profile + (broad_billow - 0.48) * profile * 0.28;
+    return saturate(density * mix(0.68, 1.30, saturate(pc.resolution_weather.w)));
+}
 float cloud_shadow_transmittance(vec3 world_position, vec3 sun_direction) {
     float t0;
     float t1;
@@ -986,7 +1011,7 @@ float cloud_shadow_transmittance(vec3 world_position, vec3 sun_direction) {
 
     for (int i = 0; i < SHADOW_STEPS; i++) {
         vec3 p = world_position + sun_direction * t;
-        float shadow_density = raw_cloud_density(p);
+        float shadow_density = shadow_cloud_density(p);
         optical_depth += shadow_density * step_length;
         t += step_length;
     }
