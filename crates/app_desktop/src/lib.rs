@@ -23,7 +23,7 @@ use vulkano::{
         GraphicsPipeline, Pipeline, PipelineLayout, PipelineShaderStageCreateInfo,
         graphics::{
             GraphicsPipelineCreateInfo,
-            color_blend::{AttachmentBlend, ColorBlendAttachmentState, ColorBlendState},
+            color_blend::{ColorBlendAttachmentState, ColorBlendState},
             input_assembly::InputAssemblyState,
             multisample::MultisampleState,
             rasterization::RasterizationState,
@@ -616,7 +616,9 @@ fn create_sky_pipeline(
             multisample_state: Some(MultisampleState::default()),
             color_blend_state: Some(ColorBlendState {
                 attachments: vec![ColorBlendAttachmentState {
-                    blend: Some(AttachmentBlend::alpha()),
+                    // Full-screen sky/cloud output is opaque; blending can expose stale
+                    // swapchain contents as view-dependent transparent tunnels.
+                    blend: None,
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -671,969 +673,455 @@ mod sky_fs {
     vulkano_shaders::shader! {
         ty: "fragment",
         src: r#"
-            #version 450
+#version 450
 
-            layout(location = 0) in vec2 in_uv;
-            layout(location = 0) out vec4 out_color;
+layout(location = 0) in vec2 in_uv;
+layout(location = 0) out vec4 out_color;
 
-            layout(push_constant) uniform SkyPushConstants {
-                vec4 camera_forward_tan_x;
-                vec4 camera_right_tan_y;
-                vec4 camera_up_time;
-                vec4 camera_position_seed;
-                vec4 sun_direction_radius;
-                vec4 resolution_weather;
-            } pc;
+layout(push_constant) uniform SkyPushConstants {
+    vec4 camera_forward_tan_x;
+    vec4 camera_right_tan_y;
+    vec4 camera_up_time;
+    vec4 camera_position_seed;
+    vec4 sun_direction_radius;
+    vec4 resolution_weather;
+} pc;
 
-            float hash12(vec2 value) {
-                vec3 p3 = fract(vec3(value.xyx) * 0.1031);
-                p3 += dot(p3, p3.yzx + 33.33);
-                return fract((p3.x + p3.y) * p3.z);
+const float PI = 3.14159265358979323846;
+const int PRIMARY_STEPS = 64;
+const int SHADOW_STEPS = 5;
+const float CLOUD_BASE_M = 1150.0;
+const float CLOUD_TOP_M = 4550.0;
+const float CLOUD_LAYER_THICKNESS_M = CLOUD_TOP_M - CLOUD_BASE_M;
+const float CLOUD_MAX_DISTANCE_M = 82000.0;
+const float MIN_TRANSMITTANCE = 0.012;
+
+float saturate(float value) {
+    return clamp(value, 0.0, 1.0);
+}
+
+vec3 saturate3(vec3 value) {
+    return clamp(value, vec3(0.0), vec3(1.0));
+}
+
+float remap01(float value, float low, float high) {
+    return saturate((value - low) / max(high - low, 0.00001));
+}
+
+float hash11(float value) {
+    return fract(sin(value * 127.1 + 311.7) * 43758.5453123);
+}
+
+float hash12(vec2 value) {
+    vec3 p3 = fract(vec3(value.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+float hash13(vec3 value) {
+    return fract(sin(dot(value, vec3(127.1, 311.7, 74.7))) * 43758.5453123);
+}
+
+vec2 hash22(vec2 value) {
+    vec3 p3 = fract(vec3(value.xyx) * vec3(0.1031, 0.11369, 0.13787));
+    p3 += dot(p3, p3.yzx + 19.19);
+    return fract(vec2((p3.x + p3.y) * p3.z, (p3.x + p3.z) * p3.y));
+}
+
+vec3 hash33(vec3 value) {
+    return fract(sin(vec3(
+        dot(value, vec3(127.1, 311.7,  74.7)),
+        dot(value, vec3(269.5, 183.3, 246.1)),
+        dot(value, vec3(113.5, 271.9, 124.6))
+    )) * 43758.5453123);
+}
+
+float value_noise2(vec2 value) {
+    vec2 cell = floor(value);
+    vec2 local = fract(value);
+    vec2 smooth_local = local * local * (3.0 - 2.0 * local);
+
+    float a = hash12(cell + vec2(0.0, 0.0));
+    float b = hash12(cell + vec2(1.0, 0.0));
+    float c = hash12(cell + vec2(0.0, 1.0));
+    float d = hash12(cell + vec2(1.0, 1.0));
+    return mix(mix(a, b, smooth_local.x), mix(c, d, smooth_local.x), smooth_local.y);
+}
+
+float value_noise3(vec3 value) {
+    vec3 cell = floor(value);
+    vec3 local = fract(value);
+    vec3 smooth_local = local * local * (3.0 - 2.0 * local);
+
+    float c000 = hash13(cell + vec3(0.0, 0.0, 0.0));
+    float c100 = hash13(cell + vec3(1.0, 0.0, 0.0));
+    float c010 = hash13(cell + vec3(0.0, 1.0, 0.0));
+    float c110 = hash13(cell + vec3(1.0, 1.0, 0.0));
+    float c001 = hash13(cell + vec3(0.0, 0.0, 1.0));
+    float c101 = hash13(cell + vec3(1.0, 0.0, 1.0));
+    float c011 = hash13(cell + vec3(0.0, 1.0, 1.0));
+    float c111 = hash13(cell + vec3(1.0, 1.0, 1.0));
+
+    float x00 = mix(c000, c100, smooth_local.x);
+    float x10 = mix(c010, c110, smooth_local.x);
+    float x01 = mix(c001, c101, smooth_local.x);
+    float x11 = mix(c011, c111, smooth_local.x);
+    float y0 = mix(x00, x10, smooth_local.y);
+    float y1 = mix(x01, x11, smooth_local.y);
+    return mix(y0, y1, smooth_local.z);
+}
+
+float fbm2(vec2 value) {
+    float sum = 0.0;
+    float amplitude = 0.5;
+    float norm = 0.0;
+    mat2 octave = mat2(1.61, 1.08, -1.08, 1.61);
+    for (int i = 0; i < 5; i++) {
+        sum += value_noise2(value) * amplitude;
+        norm += amplitude;
+        value = octave * value + vec2(13.17, 7.31);
+        amplitude *= 0.54;
+    }
+    return sum / max(norm, 0.00001);
+}
+
+float fbm3(vec3 value) {
+    float sum = 0.0;
+    float amplitude = 0.5;
+    float norm = 0.0;
+    for (int i = 0; i < 5; i++) {
+        sum += value_noise3(value) * amplitude;
+        norm += amplitude;
+        value = value * 2.03 + vec3(17.13, 7.71, 31.41);
+        amplitude *= 0.53;
+    }
+    return sum / max(norm, 0.00001);
+}
+
+float worley2(vec2 value) {
+    vec2 cell = floor(value);
+    vec2 local = fract(value);
+    float closest = 10.0;
+
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            vec2 offset = vec2(float(x), float(y));
+            vec2 feature = offset + hash22(cell + offset) - local;
+            closest = min(closest, dot(feature, feature));
+        }
+    }
+
+    return sqrt(closest);
+}
+
+float worley3(vec3 value) {
+    vec3 cell = floor(value);
+    vec3 local = fract(value);
+    float closest = 10.0;
+
+    for (int z = -1; z <= 1; z++) {
+        for (int y = -1; y <= 1; y++) {
+            for (int x = -1; x <= 1; x++) {
+                vec3 offset = vec3(float(x), float(y), float(z));
+                vec3 feature = offset + hash33(cell + offset) - local;
+                closest = min(closest, dot(feature, feature));
+            }
+        }
+    }
+
+    return sqrt(closest);
+}
+
+vec3 aces(vec3 color) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return saturate3((color * (a * color + b)) / (color * (c * color + d) + e));
+}
+
+float henyey_greenstein(float cos_theta, float g) {
+    float g2 = g * g;
+    float denom = pow(max(1.0 + g2 - 2.0 * g * cos_theta, 0.0001), 1.5);
+    return (1.0 - g2) / (4.0 * PI * denom);
+}
+
+float interleaved_gradient_noise(vec2 pixel, float frameish) {
+    return fract(52.9829189 * fract(0.06711056 * pixel.x + 0.00583715 * pixel.y + frameish * 0.071));
+}
+
+bool ray_cloud_layer_interval(vec3 origin, vec3 direction, out float t0, out float t1) {
+    if (abs(direction.y) < 0.0001) {
+        if (origin.y < CLOUD_BASE_M || origin.y > CLOUD_TOP_M) {
+            t0 = 0.0;
+            t1 = 0.0;
+            return false;
+        }
+        t0 = 0.0;
+        t1 = CLOUD_MAX_DISTANCE_M;
+        return true;
+    }
+
+    float t_base = (CLOUD_BASE_M - origin.y) / direction.y;
+    float t_top = (CLOUD_TOP_M - origin.y) / direction.y;
+    float near_t = min(t_base, t_top);
+    float far_t = max(t_base, t_top);
+
+    t0 = max(near_t, 0.0);
+    t1 = min(far_t, CLOUD_MAX_DISTANCE_M);
+    return t1 > t0;
+}
+
+vec2 wind_offset_m(float time_seconds, float seed) {
+    float seed_angle = mix(-0.45, 0.45, hash11(seed + 2.7));
+    vec2 direction = normalize(vec2(cos(seed_angle), sin(seed_angle)) + vec2(0.85, 0.28));
+    return direction * time_seconds * 28.0;
+}
+
+float cloud_height01(vec3 world_position) {
+    return saturate((world_position.y - CLOUD_BASE_M) / CLOUD_LAYER_THICKNESS_M);
+}
+
+float vertical_density_profile(float h) {
+    // Real cumulus clouds tend to have a comparatively flat condensation base and a
+    // softer, boiling top.  This profile gives weight to the body while keeping the
+    // base planar instead of spherical.
+    float flat_base = smoothstep(0.015, 0.085, h);
+    float soft_top = 1.0 - smoothstep(0.72, 1.00, h);
+    float rising_tower = smoothstep(0.18, 0.58, h) * (1.0 - smoothstep(0.78, 1.00, h));
+    float base_body = mix(0.70, 1.20, rising_tower);
+    return flat_base * soft_top * base_body;
+}
+
+float cloud_coverage_field(vec2 world_xz, float time_seconds, float seed) {
+    vec2 wind = wind_offset_m(time_seconds, seed);
+    vec2 seed_offset = vec2(hash11(seed + 10.0), hash11(seed + 37.0)) * 10000.0;
+    vec2 p = (world_xz + wind + seed_offset) * 0.000085;
+
+    float large_weather = fbm2(p * 0.72 + vec2(seed * 0.011, -seed * 0.017));
+    float cell_breakup = 1.0 - saturate(worley2(p * 1.38 + vec2(seed * 0.021, 4.3)) * 1.06);
+    float cloud_streets = fbm2(vec2(p.x * 2.20 + p.y * 0.42, p.y * 0.66 - p.x * 0.19));
+    float local_variation = fbm2(p * 3.40 + vec2(11.0, seed * 0.013));
+
+    float field = large_weather * 0.56 + cell_breakup * 0.25 + cloud_streets * 0.12 + local_variation * 0.07;
+    float requested_coverage = saturate(pc.resolution_weather.z);
+    float threshold = mix(0.62, 0.37, requested_coverage);
+    float mask = remap01(field, threshold, 0.96);
+    return smoothstep(0.0, 1.0, mask);
+}
+
+float raw_cloud_density(vec3 world_position) {
+    float h = cloud_height01(world_position);
+    if (h <= 0.0 || h >= 1.0) {
+        return 0.0;
+    }
+
+    float time_seconds = pc.camera_up_time.w;
+    float seed = pc.camera_position_seed.w;
+    float density_setting = saturate(pc.resolution_weather.w);
+
+    vec2 wind = wind_offset_m(time_seconds, seed);
+    float coverage_mask = cloud_coverage_field(world_position.xz, time_seconds, seed);
+    if (coverage_mask <= 0.001) {
+        return 0.0;
+    }
+
+    float profile = vertical_density_profile(h);
+    vec2 low_warp = vec2(
+        fbm2(world_position.xz * 0.00019 + vec2(seed * 0.017, time_seconds * 0.012)),
+        fbm2(world_position.zx * 0.00022 + vec2(-time_seconds * 0.014, seed * 0.023))
+    ) - 0.5;
+
+    vec3 q = vec3(
+        (world_position.x + wind.x + low_warp.x * 1800.0) * 0.00038,
+        (world_position.y - CLOUD_BASE_M) * 0.00062,
+        (world_position.z + wind.y + low_warp.y * 1800.0) * 0.00038
+    );
+    q += vec3(seed * 0.013, 0.0, seed * 0.019);
+    q.x += h * 0.38;
+    q.z += h * 0.19;
+
+    float billow_low = fbm3(q * 2.10 + vec3(3.7, time_seconds * 0.018, seed * 0.011));
+    float billow_mid = fbm3(q * 4.60 + vec3(seed * 0.029, -time_seconds * 0.026, 5.1));
+    float fine_noise = fbm3(q * 9.80 + vec3(-time_seconds * 0.044, 8.2, seed * 0.031));
+
+    float primary_shape = coverage_mask * profile;
+    primary_shape += (billow_low - 0.46) * 0.42 * profile;
+    primary_shape += (billow_mid - 0.50) * 0.19 * profile;
+
+    float density = remap01(primary_shape, 0.12, 0.88);
+
+    // Cell-like erosion removes the old shiny/spherical look.  The erosion is stronger
+    // near boundaries and near the top, producing cauliflower towers and wispy breakup.
+    float edge = 1.0 - smoothstep(0.24, 0.82, density);
+    float top_evaporation = smoothstep(0.56, 0.98, h);
+    float low_cells = worley3(q * 3.55 + vec3(seed * 0.031, 2.0, time_seconds * 0.013));
+    float high_cells = worley3(q * 8.20 + vec3(8.0, seed * 0.043, -time_seconds * 0.031));
+    float cellular_erosion = smoothstep(0.18, 0.72, low_cells) * 0.34;
+    cellular_erosion += smoothstep(0.12, 0.64, high_cells) * mix(0.16, 0.31, top_evaporation);
+    density -= cellular_erosion * edge;
+
+    // Flat, heavy underside plus soft high-detail rim texture.
+    float underside = 1.0 - smoothstep(0.035, 0.20, h);
+    density += underside * coverage_mask * 0.12;
+    density += (fine_noise - 0.52) * 0.075 * edge * (1.0 - underside * 0.35);
+
+    // Let the requested density control thickness, not specular brightness.
+    density *= mix(0.72, 1.46, density_setting);
+    return saturate(density);
+}
+
+float cloud_shadow_transmittance(vec3 world_position, vec3 sun_direction) {
+    float t0;
+    float t1;
+    if (!ray_cloud_layer_interval(world_position + sun_direction * 35.0, sun_direction, t0, t1)) {
+        return 1.0;
+    }
+
+    float max_distance = min(t1, 12500.0);
+    float step_length = max_distance / float(SHADOW_STEPS);
+    float t = step_length * 0.62;
+    float optical_depth = 0.0;
+
+    for (int i = 0; i < SHADOW_STEPS; i++) {
+        vec3 p = world_position + sun_direction * t;
+        float shadow_density = raw_cloud_density(p);
+        optical_depth += shadow_density * step_length;
+        t += step_length;
+    }
+
+    float density_setting = saturate(pc.resolution_weather.w);
+    float extinction = mix(0.00042, 0.00105, density_setting);
+    return exp(-optical_depth * extinction * 1.30);
+}
+
+vec3 sky_radiance(vec3 direction, vec3 sun_direction) {
+    float horizon_amount = pow(1.0 - saturate(direction.y * 0.5 + 0.5), 2.2);
+    float sky_up = saturate(direction.y * 0.5 + 0.5);
+    vec3 zenith = vec3(0.18, 0.39, 0.78);
+    vec3 horizon = vec3(0.66, 0.75, 0.88);
+    vec3 lower_haze = vec3(0.84, 0.82, 0.75);
+
+    vec3 sky = mix(horizon, zenith, pow(sky_up, 0.74));
+    sky = mix(sky, lower_haze, horizon_amount * 0.34);
+
+    float mu = saturate(dot(direction, sun_direction));
+    float sun_radius = max(pc.sun_direction_radius.w, 0.0042);
+    float sun_disk = smoothstep(cos(sun_radius * 1.85), cos(sun_radius * 0.42), mu);
+    float mie_haze = pow(mu, 22.0);
+    float wide_glow = pow(mu, 3.2);
+
+    vec3 sun_color = vec3(1.00, 0.83, 0.55);
+    sky += sun_color * sun_disk * 9.0;
+    sky += sun_color * mie_haze * 0.32;
+    sky += vec3(1.00, 0.68, 0.34) * wide_glow * 0.075;
+
+    if (direction.y < 0.0) {
+        float ground = saturate(-direction.y * 3.5);
+        vec3 ground_haze = mix(vec3(0.54, 0.60, 0.62), vec3(0.20, 0.23, 0.22), ground);
+        sky = mix(sky, ground_haze, saturate(ground * 0.80));
+    }
+
+    float sun_height = saturate(sun_direction.y * 0.5 + 0.5);
+    sky *= mix(0.78, 1.06, sun_height);
+    return sky;
+}
+
+vec3 cloud_lighting(vec3 world_position, vec3 view_to_camera, vec3 sun_direction, float density, float distance_m) {
+    float h = cloud_height01(world_position);
+    float shadow = cloud_shadow_transmittance(world_position, sun_direction);
+    float cos_theta = dot(-view_to_camera, sun_direction);
+
+    // A matte cloud is dominated by volumetric scattering, not glossy reflection.
+    // Use broad forward scatter, a small backward term, blue skylight, and a powder
+    // response at soft edges to create white bodies and warm silver linings.
+    float forward_phase = henyey_greenstein(cos_theta, 0.58) * 1.55;
+    float wide_phase = henyey_greenstein(cos_theta, 0.18) * 0.80;
+    float backward_phase = henyey_greenstein(cos_theta, -0.26) * 0.34;
+    float phase = 0.50 + forward_phase + wide_phase + backward_phase;
+
+    float powder = 1.0 - exp(-density * 5.2);
+    float soft_edge = pow(saturate(1.0 - density), 2.4);
+    float silver_lining = soft_edge * pow(saturate(cos_theta), 2.6) * shadow;
+
+    vec3 sun_color = vec3(1.00, 0.90, 0.74);
+    vec3 zenith_ambient = vec3(0.54, 0.66, 0.86);
+    vec3 horizon_ambient = vec3(0.74, 0.77, 0.78);
+    vec3 underside_ambient = vec3(0.32, 0.36, 0.42);
+
+    vec3 ambient = mix(underside_ambient, mix(horizon_ambient, zenith_ambient, h), smoothstep(0.10, 0.70, h));
+    float ambient_occlusion = mix(0.54, 1.0, shadow) * mix(0.78, 1.10, h);
+    vec3 lighting = ambient * ambient_occlusion * 0.48;
+    lighting += sun_color * shadow * phase * (0.28 + powder * 0.58);
+    lighting += sun_color * silver_lining * 0.48;
+
+    float aerial = saturate(1.0 - exp(-distance_m * 0.000035));
+    vec3 air_color = sky_radiance(normalize(world_position - pc.camera_position_seed.xyz), sun_direction);
+    lighting = mix(lighting, air_color * 0.92, aerial * 0.42);
+
+    return lighting * vec3(0.96, 0.97, 0.95);
+}
+
+void main() {
+    vec2 ndc = vec2(in_uv.x * 2.0 - 1.0, (1.0 - in_uv.y) * 2.0 - 1.0);
+
+    vec3 camera_forward = normalize(pc.camera_forward_tan_x.xyz);
+    vec3 camera_right = normalize(pc.camera_right_tan_y.xyz);
+    vec3 camera_up = normalize(pc.camera_up_time.xyz);
+    float tan_x = pc.camera_forward_tan_x.w;
+    float tan_y = pc.camera_right_tan_y.w;
+    vec3 origin = pc.camera_position_seed.xyz;
+    vec3 sun_direction = normalize(pc.sun_direction_radius.xyz);
+
+    vec3 ray_direction = normalize(camera_forward + camera_right * ndc.x * tan_x + camera_up * ndc.y * tan_y);
+    vec3 background = sky_radiance(ray_direction, sun_direction);
+    vec3 color = background;
+
+    float t0;
+    float t1;
+    if (ray_cloud_layer_interval(origin, ray_direction, t0, t1)) {
+        float segment = max(t1 - t0, 1.0);
+        float step_length = segment / float(PRIMARY_STEPS);
+        float jitter = interleaved_gradient_noise(gl_FragCoord.xy, pc.camera_up_time.w);
+        float t = t0 + step_length * jitter;
+
+        vec3 accumulated = vec3(0.0);
+        float transmittance = 1.0;
+        float density_setting = saturate(pc.resolution_weather.w);
+        float extinction = mix(0.00042, 0.00105, density_setting);
+
+        for (int i = 0; i < PRIMARY_STEPS; i++) {
+            if (t > t1) {
+                break;
             }
 
-            float hash13(float value) {
-                return hash12(vec2(value, value * 1.61803398875 + 7.13));
-            }
+            vec3 p = origin + ray_direction * t;
+            float density = raw_cloud_density(p);
 
-            vec3 hash31(float value) {
-                return vec3(
-                    hash13(value + 0.11),
-                    hash13(value + 17.31),
-                    hash13(value + 41.17)
-                );
-            }
+            if (density > 0.0015) {
+                float optical_depth = density * extinction * step_length;
+                float alpha = 1.0 - exp(-optical_depth);
+                vec3 lit_cloud = cloud_lighting(p, -ray_direction, sun_direction, density, t);
+                accumulated += transmittance * alpha * lit_cloud;
+                transmittance *= exp(-optical_depth);
 
-            float value_noise(vec2 value) {
-                vec2 cell = floor(value);
-                vec2 local = fract(value);
-                vec2 smooth_local = local * local * (3.0 - 2.0 * local);
-                float seed = pc.camera_position_seed.w * 0.017;
-                float a = hash12(cell + seed);
-                float b = hash12(cell + vec2(1.0, 0.0) + seed);
-                float c = hash12(cell + vec2(0.0, 1.0) + seed);
-                float d = hash12(cell + vec2(1.0, 1.0) + seed);
-                return mix(mix(a, b, smooth_local.x), mix(c, d, smooth_local.x), smooth_local.y);
-            }
-
-            float fbm(vec2 value) {
-                float sum = 0.0;
-                float amplitude = 0.5;
-                float norm = 0.0;
-                for (int i = 0; i < 5; i++) {
-                    sum += value_noise(value) * amplitude;
-                    norm += amplitude;
-                    value = mat2(1.62, 1.03, -1.03, 1.62) * value + vec2(7.1, 3.4);
-                    amplitude *= 0.52;
+                if (transmittance < MIN_TRANSMITTANCE) {
+                    break;
                 }
-                return sum / norm;
             }
 
-            float fbm_fast(vec2 value) {
-                float sum = 0.0;
-                float amplitude = 0.5;
-                float norm = 0.0;
-                for (int i = 0; i < 2; i++) {
-                    sum += value_noise(value) * amplitude;
-                    norm += amplitude;
-                    value = mat2(1.58, 0.96, -0.96, 1.58) * value + vec2(4.8, 2.9);
-                    amplitude *= 0.54;
-                }
-                return sum / norm;
-            }
-
-            float hash33(vec3 value) {
-                vec3 p3 = fract(value * 0.1031);
-                p3 += dot(p3, p3.yzx + 33.33);
-                return fract((p3.x + p3.y) * p3.z);
-            }
-
-            float value_noise3(vec3 value) {
-                vec3 cell = floor(value);
-                vec3 local = fract(value);
-                vec3 smooth_local = local * local * (3.0 - 2.0 * local);
-                float seed = pc.camera_position_seed.w * 0.017;
-                float c000 = hash33(cell + vec3(seed));
-                float c100 = hash33(cell + vec3(1.0, 0.0, 0.0) + vec3(seed));
-                float c010 = hash33(cell + vec3(0.0, 1.0, 0.0) + vec3(seed));
-                float c110 = hash33(cell + vec3(1.0, 1.0, 0.0) + vec3(seed));
-                float c001 = hash33(cell + vec3(0.0, 0.0, 1.0) + vec3(seed));
-                float c101 = hash33(cell + vec3(1.0, 0.0, 1.0) + vec3(seed));
-                float c011 = hash33(cell + vec3(0.0, 1.0, 1.0) + vec3(seed));
-                float c111 = hash33(cell + vec3(1.0, 1.0, 1.0) + vec3(seed));
-                float x00 = mix(c000, c100, smooth_local.x);
-                float x10 = mix(c010, c110, smooth_local.x);
-                float x01 = mix(c001, c101, smooth_local.x);
-                float x11 = mix(c011, c111, smooth_local.x);
-                float y0 = mix(x00, x10, smooth_local.y);
-                float y1 = mix(x01, x11, smooth_local.y);
-                return mix(y0, y1, smooth_local.z);
-            }
-
-            float fbm3(vec3 value) {
-                float sum = 0.0;
-                float amplitude = 0.5;
-                float norm = 0.0;
-                for (int i = 0; i < 3; i++) {
-                    sum += value_noise3(value) * amplitude;
-                    norm += amplitude;
-                    value = value * 2.04 + vec3(11.7, 5.2, 8.3);
-                    amplitude *= 0.52;
-                }
-                return sum / norm;
-            }
-
-            vec3 aces(vec3 value) {
-                const float a = 2.51;
-                const float b = 0.03;
-                const float c = 2.43;
-                const float d = 0.59;
-                const float e = 0.14;
-                return clamp((value * (a * value + b)) / (value * (c * value + d) + e), 0.0, 1.0);
-            }
-
-            float lobe(vec2 p, vec2 center, float radius) {
-                return 1.0 - smoothstep(radius * 0.58, radius, length(p - center));
-            }
-
-            float volume_lobe(vec3 p, vec3 center, vec3 radius) {
-                vec3 q = (p - center) / radius;
-                return 1.0 - smoothstep(0.49, 1.0816, dot(q, q));
-            }
-
-            float crisp_volume_lobe(vec3 p, vec3 center, vec3 radius) {
-                vec3 q = (p - center) / radius;
-                return 1.0 - smoothstep(0.56, 1.018, dot(q, q));
-            }
-
-            float soft_shape_union(float a, float b) {
-                a = clamp(a, 0.0, 1.0);
-                b = clamp(b, 0.0, 1.0);
-                return clamp(a + b - a * b * 0.72, 0.0, 1.0);
-            }
-
-            float moving_volume_lobe(vec3 p, vec3 center, vec3 radius, float phase, float amp) {
-                vec3 offset = vec3(
-                    sin(phase + center.z * 7.3),
-                    sin(phase * 0.73 + center.x * 8.1) * 0.45,
-                    cos(phase * 0.91 + center.y * 6.7)
-                ) * amp;
-                return volume_lobe(p, center + offset, radius);
-            }
-
-            float animated_puff_field(vec3 p, float time, float seed) {
-                float field = 0.0;
-                for (int i = 0; i < 11; i++) {
-                    float fi = float(i);
-                    vec3 rnd = hash31(seed * 0.071 + fi * 23.73);
-                    float split = smoothstep(
-                        0.16,
-                        0.90,
-                        0.5 + 0.5 * sin(time * (0.105 + rnd.y * 0.055) + seed * 0.019 + fi * 2.31)
-                    );
-                    vec3 center = vec3(
-                        mix(-0.76, 0.76, rnd.x),
-                        mix(-0.34, 0.42, rnd.y),
-                        mix(-0.58, 0.58, rnd.z)
-                    );
-                    center.x += sin(time * (0.14 + rnd.z * 0.07) + fi * 1.91) * 0.060 + (rnd.x - 0.5) * split * 0.15;
-                    center.y += sin(time * (0.12 + rnd.x * 0.05) + fi * 1.37) * 0.042;
-                    center.z += cos(time * (0.13 + rnd.y * 0.06) + fi * 1.67) * 0.070 + (rnd.z - 0.5) * split * 0.12;
-                    vec3 radius = vec3(
-                        mix(0.16, 0.33, rnd.z),
-                        mix(0.13, 0.29, rnd.x),
-                        mix(0.17, 0.36, rnd.y)
-                    ) * (1.0 - split * 0.13);
-                    field = soft_shape_union(field, crisp_volume_lobe(p, center, radius) * 0.92);
-                }
-                return field;
-            }
-
-            float soft_edge_puff_field(vec3 p, float time, float seed) {
-                float field = 0.0;
-                for (int i = 0; i < 14; i++) {
-                    float fi = float(i);
-                    vec3 rnd = hash31(seed * 0.093 + fi * 31.19);
-                    vec3 side = normalize(vec3(rnd.x - 0.5, (rnd.y - 0.5) * 0.55, rnd.z - 0.5));
-                    float drift = sin(time * (0.08 + rnd.z * 0.05) + fi * 1.73 + seed * 0.013);
-                    vec3 center = side * vec3(0.72, 0.42, 0.62);
-                    center += vec3(drift * 0.075, sin(time * 0.10 + fi) * 0.045, cos(time * 0.09 + fi * 1.7) * 0.070);
-                    vec3 radius = vec3(
-                        mix(0.11, 0.28, rnd.z),
-                        mix(0.09, 0.23, rnd.x),
-                        mix(0.12, 0.30, rnd.y)
-                    );
-                    field = soft_shape_union(field, volume_lobe(p, center, radius) * 0.82);
-                }
-                return field;
-            }
-
-            float body_billow_field(vec3 p, float time, float seed) {
-                float field = 0.0;
-                for (int i = 0; i < 15; i++) {
-                    float fi = float(i);
-                    vec3 rnd = hash31(seed * 0.127 + fi * 19.91);
-                    vec3 center = vec3(
-                        mix(-0.78, 0.78, rnd.x),
-                        mix(-0.30, 0.38, rnd.y),
-                        mix(-0.58, 0.58, rnd.z)
-                    );
-                    center.x += sin(time * (0.060 + rnd.y * 0.040) + fi * 1.47) * 0.055;
-                    center.y += cos(time * (0.070 + rnd.z * 0.035) + fi * 1.21) * 0.040;
-                    center.z += sin(time * (0.065 + rnd.x * 0.045) + fi * 1.83) * 0.060;
-                    vec3 radius = vec3(
-                        mix(0.20, 0.42, rnd.z),
-                        mix(0.16, 0.34, rnd.x),
-                        mix(0.22, 0.44, rnd.y)
-                    );
-                    field = soft_shape_union(field, volume_lobe(p, center, radius) * 0.78);
-                }
-                return field;
-            }
-
-            vec3 volume_cloud_flow(vec3 local, float time, float seed) {
-                vec2 wind = vec2(time * 0.072 + seed * 0.013, -time * 0.038);
-                float roll = fbm_fast(local.xz * 1.28 + wind);
-                float shear = fbm_fast(local.zy * 1.46 - wind.yx + vec2(3.7, 1.9));
-                float lift = value_noise(local.xy * 1.06 + vec2(seed * 0.021, time * 0.046));
-                float gust = sin(time * 0.18 + local.z * 5.4 + seed * 0.011) * (1.0 - smoothstep(0.18, 0.95, abs(local.y)));
-                vec3 flow = vec3(roll - 0.5, (lift - 0.5) * 0.48, shear - 0.5) * 0.155;
-                flow.x += local.y * 0.078 * sin(time * 0.052 + seed * 0.017) + gust * 0.045;
-                flow.z += local.x * 0.054 * cos(time * 0.043 + seed * 0.011);
-                return local + flow;
-            }
-
-            float volume_cloud_shape(vec3 local, float time, float seed) {
-                float phase = time * 0.46 + seed * 0.009;
-                vec3 p = local;
-                p.x += local.y * 0.16 * sin(time * 0.15 + seed * 0.013);
-                p.z += local.x * local.y * 0.11 * cos(time * 0.12 + seed * 0.017);
-                float radius2 = dot(local, local);
-                float envelope = 1.0 - smoothstep(0.64, 1.1449, radius2);
-                float bottom_lift = smoothstep(-1.10, -0.76, local.y);
-                float anvil_cap = 1.0 - smoothstep(0.76, 1.04, local.y);
-                float lobes = 0.0;
-                lobes = soft_shape_union(lobes, moving_volume_lobe(p, vec3(-0.62, -0.05, 0.02), vec3(0.30, 0.40, 0.44), phase + 0.2, 0.076) * 0.92);
-                lobes = soft_shape_union(lobes, moving_volume_lobe(p, vec3(-0.38, 0.13, -0.25), vec3(0.31, 0.35, 0.34), phase + 1.1, 0.068) * 0.92);
-                lobes = soft_shape_union(lobes, moving_volume_lobe(p, vec3(-0.16, -0.18, 0.22), vec3(0.39, 0.39, 0.43), phase + 2.2, 0.060) * 0.94);
-                lobes = soft_shape_union(lobes, moving_volume_lobe(p, vec3(0.10, -0.17, -0.12), vec3(0.43, 0.40, 0.43), phase + 3.0, 0.066) * 0.94);
-                lobes = soft_shape_union(lobes, moving_volume_lobe(p, vec3(0.36, -0.04, 0.20), vec3(0.36, 0.38, 0.38), phase + 4.1, 0.070) * 0.92);
-                lobes = soft_shape_union(lobes, moving_volume_lobe(p, vec3(0.60, 0.08, -0.08), vec3(0.27, 0.33, 0.35), phase + 5.4, 0.078) * 0.88);
-                lobes = soft_shape_union(lobes, moving_volume_lobe(p, vec3(0.02, 0.34, 0.08), vec3(0.34, 0.25, 0.36), phase + 6.5, 0.058) * 0.88);
-                lobes = soft_shape_union(lobes, moving_volume_lobe(p, vec3(-0.25, 0.30, 0.27), vec3(0.25, 0.22, 0.28), phase + 7.0, 0.060) * 0.84);
-                lobes = soft_shape_union(lobes, moving_volume_lobe(p, vec3(0.31, 0.26, -0.30), vec3(0.25, 0.23, 0.27), phase + 8.4, 0.066) * 0.84);
-                lobes = soft_shape_union(lobes, moving_volume_lobe(p, vec3(-0.32, -0.38, 0.02), vec3(0.23, 0.18, 0.28), phase + 9.2, 0.052) * 0.80);
-                float puffs = animated_puff_field(p, time, seed);
-                float soft_puffs = soft_edge_puff_field(p, time, seed);
-                float billows = body_billow_field(p, time, seed);
-                lobes = soft_shape_union(lobes, puffs * 0.90);
-                lobes = soft_shape_union(lobes, billows * 0.76);
-
-                float body = max(envelope * 0.022, soft_shape_union(lobes, soft_puffs * 0.66));
-                float edge = smoothstep(0.12, 0.42, lobes) * (1.0 - smoothstep(0.54, 0.88, lobes));
-                float wind_cut = value_noise(p.xz * 9.5 + vec2(time * 0.55 + p.y * 2.6, seed * 0.037));
-                float filament = value_noise(p.xy * 13.5 + vec2(-time * 0.54 + p.z * 4.2, 9.1));
-                float fracture = value_noise(p.xz * 17.0 + vec2(time * 0.70, seed * 0.059));
-                float shear_gap = fbm_fast(p.xz * 6.4 + vec2(time * 0.34 + p.y * 2.7, seed * 0.061));
-                float vein_gap = value_noise(p.yz * 9.5 + vec2(time * 0.46 + p.x * 3.0, seed * 0.083));
-                float ruffle = fbm_fast(p.xz * 5.2 + vec2(time * 0.22 + p.y * 1.7, seed * 0.037));
-                float vertical_ruffle = fbm_fast(p.xy * 6.1 + vec2(-time * 0.18 + p.z * 1.5, seed * 0.049));
-                body += edge * ((wind_cut - 0.48) * 0.30 + (filament - 0.50) * 0.15);
-                body += edge * ((ruffle - 0.48) * 0.18 + (vertical_ruffle - 0.50) * 0.11);
-                body -= edge * max(0.0, 0.54 - filament) * 0.15;
-                body -= edge * max(0.0, 0.44 - fracture) * 0.05;
-                body -= edge * max(0.0, 0.43 - ruffle) * 0.08;
-                body -= smoothstep(0.20, 0.64, lobes) * max(0.0, 0.42 - shear_gap) * 0.09;
-                body -= edge * max(0.0, 0.40 - vein_gap) * 0.05;
-                body += billows * 0.105;
-                body += soft_puffs * smoothstep(0.26, 0.98, radius2) * 0.170;
-                return clamp(body, 0.0, 1.0) * bottom_lift * anvil_cap;
-            }
-
-            float volume_cloud_shadow_shape(vec3 local, float time, float seed) {
-                float phase = time * 0.46 + seed * 0.009;
-                vec3 p = local;
-                p.x += local.y * 0.13 * sin(time * 0.15 + seed * 0.013);
-                p.z += local.x * local.y * 0.08 * cos(time * 0.12 + seed * 0.017);
-                float radius2 = dot(local, local);
-                float envelope = 1.0 - smoothstep(0.64, 1.1449, radius2);
-                float bottom_lift = smoothstep(-1.10, -0.76, local.y);
-                float anvil_cap = 1.0 - smoothstep(0.76, 1.04, local.y);
-                float lobes = 0.0;
-                lobes = soft_shape_union(lobes, moving_volume_lobe(p, vec3(-0.54, -0.04, -0.02), vec3(0.42, 0.46, 0.50), phase + 0.4, 0.060) * 0.90);
-                lobes = soft_shape_union(lobes, moving_volume_lobe(p, vec3(-0.10, -0.17, 0.15), vec3(0.50, 0.45, 0.48), phase + 2.6, 0.050) * 0.94);
-                lobes = soft_shape_union(lobes, moving_volume_lobe(p, vec3(0.34, -0.05, 0.10), vec3(0.44, 0.43, 0.44), phase + 4.7, 0.058) * 0.92);
-                lobes = soft_shape_union(lobes, moving_volume_lobe(p, vec3(0.48, 0.12, -0.20), vec3(0.34, 0.36, 0.38), phase + 6.2, 0.060) * 0.86);
-                lobes = soft_shape_union(lobes, moving_volume_lobe(p, vec3(0.00, 0.30, 0.04), vec3(0.40, 0.28, 0.42), phase + 7.3, 0.045) * 0.86);
-                return clamp(max(envelope * 0.08, lobes), 0.0, 1.0) * bottom_lift * anvil_cap;
-            }
-
-            bool ray_ellipsoid_interval(vec3 origin, vec3 direction, vec3 center, vec3 radii, out float t0, out float t1) {
-                vec3 o = (origin - center) / radii;
-                vec3 d = direction / radii;
-                float a = dot(d, d);
-                float b = 2.0 * dot(o, d);
-                float c = dot(o, o) - 1.0;
-                float disc = b * b - 4.0 * a * c;
-                if (a <= 0.0000001 || disc < 0.0) {
-                    return false;
-                }
-                float root = sqrt(disc);
-                t0 = (-b - root) / (2.0 * a);
-                t1 = (-b + root) / (2.0 * a);
-                return t1 > 0.0 && t1 > t0;
-            }
-
-            float volume_cloud_density_from_shape(vec3 local, float shape, float time, float seed) {
-                vec2 drift = vec2(time * 0.064, -time * 0.026 + seed * 0.019);
-                float wind = value_noise(local.xz * 1.20 + drift);
-                vec2 shear = vec2(wind - 0.5, value_noise(local.zy * 1.52 - drift.yx) - 0.5) * 0.42;
-                float coarse = fbm_fast(local.xz * 2.15 + drift + shear);
-                float billow = fbm_fast(local.xy * 4.25 + vec2(seed * 0.027, time * 0.050) + shear * 0.55);
-                float pocket = value_noise(local.zy * 7.40 + vec2(5.1 + seed * 0.011, time * 0.058) - shear);
-                float fiber = value_noise(local.xz * 10.0 + drift * 3.0 + shear * 1.7);
-                float vein = value_noise(local.xy * 7.0 + vec2(-time * 0.20 + seed * 0.017, local.z * 2.2));
-                float foam = value_noise(local.yz * 18.0 + vec2(time * 0.20 + seed * 0.029, local.x * 5.4));
-                float grain = value_noise(local.xz * 26.0 + vec2(-time * 0.24 + seed * 0.041, local.y * 4.7));
-                float scallop = fbm_fast(local.xy * 11.0 + vec2(time * 0.13 + local.z * 1.9, seed * 0.037));
-                float sharp_shape = smoothstep(0.14, 0.34, shape);
-                float density_edge = smoothstep(0.12, 0.42, shape) * (1.0 - smoothstep(0.58, 0.90, shape));
-                float foam_edge = smoothstep(0.10, 0.48, shape) * (1.0 - smoothstep(0.64, 0.94, shape));
-                float body_texture = 0.72 + coarse * 0.24 + billow * 0.26 + (fiber - 0.5) * 0.10 + (scallop - 0.5) * foam_edge * 0.16;
-                float body = shape * sharp_shape * body_texture;
-                float detail = (fiber - 0.5) * shape * sharp_shape * 0.060
-                    + (pocket - 0.5) * shape * 0.040
-                    + (vein - 0.5) * density_edge * 0.034
-                    + (foam - 0.46) * foam_edge * 0.085
-                    + (grain - 0.52) * foam_edge * 0.045;
-                float density = body + detail;
-                density -= max(0.0, 0.42 - pocket) * shape * density_edge * 0.072;
-                density -= max(0.0, 0.44 - foam) * foam_edge * 0.070;
-                density -= max(0.0, 0.40 - scallop) * density_edge * 0.046;
-                float soft_shell = smoothstep(0.08, 0.28, shape) * (1.0 - smoothstep(0.54, 0.86, shape));
-                density = max(density, smoothstep(0.20, 0.52, shape) * 0.22 + soft_shell * 0.10);
-                return clamp(density, 0.0, 1.0);
-            }
-
-            float volume_cloud_density(vec3 local, float time, float seed) {
-                vec3 flowed = volume_cloud_flow(local, time, seed);
-                return volume_cloud_density_from_shape(flowed, volume_cloud_shape(flowed, time, seed), time, seed);
-            }
-
-            void render_volume_cloud_instance(
-                vec3 cloud_center,
-                vec3 cloud_radii,
-                float cloud_seed,
-                float cloud_strength,
-                vec3 camera_position,
-                vec3 ray,
-                vec3 sun,
-                float time,
-                out vec3 volume_color,
-                out float volume_alpha,
-                out float inside_mist,
-                out float sun_occluder
-            ) {
-                volume_alpha = 0.0;
-                volume_color = vec3(0.0);
-                inside_mist = 0.0;
-                sun_occluder = 0.0;
-
-                vec3 camera_in_cloud = (camera_position - cloud_center) / cloud_radii;
-                vec3 camera_flowed = volume_cloud_flow(camera_in_cloud, time, cloud_seed);
-                float camera_shape = volume_cloud_shape(camera_flowed, time, cloud_seed);
-                float camera_density = volume_cloud_density_from_shape(camera_flowed, camera_shape, time, cloud_seed);
-                float inside_cloud = 1.0 - smoothstep(0.58, 0.82, length(camera_in_cloud));
-                inside_mist = clamp(smoothstep(0.30, 0.56, camera_density) * smoothstep(0.24, 0.54, camera_shape) * inside_cloud * 0.96 * cloud_strength, 0.0, 0.96);
-
-                float volume_t0 = 0.0;
-                float volume_t1 = 0.0;
-                if (inside_mist < 0.82 && ray_ellipsoid_interval(camera_position, ray, cloud_center, cloud_radii, volume_t0, volume_t1)) {
-                    float start_t = max(volume_t0, 0.0);
-                    float end_t = volume_t1;
-                    float span = max(end_t - start_t, 0.0);
-                    float step_len = span / 6.0;
-                    float march_jitter = 0.0;
-                    vec3 accum = vec3(0.0);
-                    float max_shape = 0.0;
-                    float max_density = 0.0;
-                    float detail_mix = 0.0;
-                    float surface_score = 0.0;
-                    float surface_crisp = 0.0;
-                    float optical_path = 0.0;
-                    float density_path = 0.0;
-                    float core_path = 0.0;
-                    float shell_path = 0.0;
-                    float max_shell = 0.0;
-                    vec3 surface_color = vec3(0.0);
-                    vec3 sun_local = normalize(vec3(sun.x / cloud_radii.x, sun.y / cloud_radii.y, sun.z / cloud_radii.z));
-
-                    for (int i = 0; i < 6; i++) {
-                        float t = start_t + (float(i) + 0.5 + march_jitter) * step_len;
-                        vec3 sample_pos = camera_position + ray * t;
-                        vec3 local = (sample_pos - cloud_center) / cloud_radii;
-                        vec3 flowed = volume_cloud_flow(local, time, cloud_seed);
-                        float shape = volume_cloud_shape(flowed, time, cloud_seed);
-                        float density = volume_cloud_density_from_shape(flowed, shape, time, cloud_seed);
-                        max_shape = max(max_shape, shape);
-                        max_density = max(max_density, density);
-                        float shell = smoothstep(0.08, 0.30, shape) * (1.0 - smoothstep(0.48, 0.82, shape));
-                        max_shell = max(max_shell, shell);
-
-                        float core_alpha = smoothstep(0.34, 0.74, shape);
-                        density_path += density * step_len * 0.0010;
-                        core_path += core_alpha * step_len * 0.0010;
-                        shell_path += shell * step_len * 0.0010;
-                        optical_path += (density * 1.82 + core_alpha * 0.68 + shell * 0.34) * step_len * 0.00118;
-                        float body_alpha = 1.0 - exp(-(density * 2.35 + core_alpha * 0.78 + shell * 0.36) * step_len * 0.00124 * cloud_strength);
-                        float sample_alpha = body_alpha * (1.0 - volume_alpha);
-                        float height_light = smoothstep(-0.72, 0.62, flowed.y);
-
-                        float shadow_near = volume_cloud_shadow_shape(flowed + sun_local * 0.24, time, cloud_seed);
-                        float shadow_mid = volume_cloud_shadow_shape(flowed + sun_local * 0.54, time, cloud_seed);
-                        float shadow_far = volume_cloud_shadow_shape(flowed + sun_local * 0.92, time, cloud_seed);
-                        float shadow_body = 1.0 - smoothstep(0.5184, 1.1664, dot(flowed + sun_local * 0.34, flowed + sun_local * 0.34));
-                        vec3 base_normal_world = normalize(vec3(flowed.x / cloud_radii.x, flowed.y / cloud_radii.y, flowed.z / cloud_radii.z) + vec3(0.0, -0.00010, 0.0));
-                        vec3 detail_normal_world = normalize(vec3(
-                            value_noise(flowed.yz * 9.0 + vec2(time * 0.14, cloud_seed * 0.017)) - 0.5,
-                            value_noise(flowed.xz * 8.5 + vec2(-time * 0.12, cloud_seed * 0.023)) - 0.5,
-                            value_noise(flowed.xy * 9.5 + vec2(time * 0.15, cloud_seed * 0.031)) - 0.5
-                        ));
-                        vec3 surface_normal_world = normalize(base_normal_world * 0.94 + detail_normal_world * 0.06);
-                        float sun_dot = dot(surface_normal_world, sun);
-                        float light_face = smoothstep(-0.08, 0.74, sun_dot);
-                        float dark_face = smoothstep(0.08, -0.58, sun_dot);
-                        float underside_shadow = smoothstep(0.20, -0.56, flowed.y) * (1.0 - clamp(sun.y, 0.0, 1.0) * 0.45);
-                        float optical_depth = shadow_near * 0.64 + shadow_mid * 0.48 + shadow_far * 0.32 + shadow_body * 0.18 + density * 0.38 + underside_shadow * 0.34;
-                        float light_transmittance = clamp(exp(-optical_depth * 1.04), 0.18, 1.0);
-
-                        float local_detail = value_noise(flowed.xz * 6.4 + vec2(time * 0.10, -time * 0.04) + cloud_seed * 0.013);
-                        float billow_detail = fbm_fast(flowed.xy * 5.4 + vec2(-time * 0.09, time * 0.045) + cloud_seed * 0.021);
-                        float fiber_detail = value_noise(flowed.xz * 10.5 + vec2(time * 0.18, cloud_seed * 0.041));
-                        detail_mix += (local_detail * 0.45 + billow_detail * 0.55) * sample_alpha;
-                        float rim_light = smoothstep(0.49, 1.0404, dot(flowed, flowed));
-                        float crisp = smoothstep(0.30, 0.80, local_detail * 0.38 + billow_detail * 0.56 + fiber_detail * 0.06);
-                        float direct_light = light_face * light_transmittance;
-                        float soft_bounce = smoothstep(0.20, 0.68, shape + density * 0.55) * (0.24 + light_transmittance * 0.20);
-                        float sky_ambient = 0.44 + height_light * 0.25 + crisp * 0.04;
-                        vec3 cool_shadow = mix(vec3(0.48, 0.53, 0.62), vec3(0.74, 0.77, 0.80), height_light);
-                        vec3 ambient_color = cool_shadow * (sky_ambient + soft_bounce * 0.46);
-                        vec3 direct_color = vec3(1.10, 1.07, 0.96) * (direct_light * 0.72);
-                        vec3 scatter_color = vec3(1.0, 0.88, 0.66) * (rim_light * 0.012 * direct_light);
-                        vec3 sample_color = ambient_color + direct_color + scatter_color;
-                        sample_color = mix(sample_color, vec3(0.995, 0.988, 0.94), soft_bounce * 0.24 + direct_light * 0.075);
-                        float broad_shadow = underside_shadow * 0.20 + dark_face * (1.0 - light_transmittance) * 0.22;
-                        sample_color *= 1.0 - broad_shadow * smoothstep(0.18, 0.74, shape);
-                        sample_color -= vec3(0.08, 0.09, 0.12) * dark_face * (1.0 - light_transmittance) * smoothstep(0.22, 0.72, shape) * 0.22;
-                        sample_color *= 0.92 + crisp * 0.15;
-                        sample_color = mix(sample_color, vec3(0.68, 0.84, 1.0), inside_cloud * 0.20);
-
-                        float current_surface_score = density * 0.82 + shape * 0.58 + crisp * 0.12;
-                        if (current_surface_score > surface_score) {
-                            surface_score = current_surface_score;
-                            surface_crisp = crisp;
-                            surface_color = sample_color;
-                        }
-                        accum += sample_color * sample_alpha;
-                        volume_alpha += sample_alpha;
-                    }
-
-                    vec3 averaged_color = accum / max(volume_alpha, 0.001);
-                    float surface_weight = smoothstep(0.42, 1.05, surface_score) * 0.65;
-                    volume_color = mix(averaged_color, surface_color, surface_weight);
-                    float edge_width = clamp(max(abs(dFdx(max_shape)), abs(dFdy(max_shape))) * 1.1, 0.010, 0.046);
-                    float path_body = density_path * 2.05 + core_path * 1.85 + shell_path * 0.72;
-                    float body_presence = clamp(max_density * 1.55 + max_shape * 0.88 + path_body * 0.52, 0.0, 2.6);
-                    float core_layer = smoothstep(0.64, 1.16, body_presence) * smoothstep(0.30, 0.60, max_density);
-                    float billow_layer = smoothstep(0.26, 0.78, body_presence) * smoothstep(0.08, 0.36, max_density) * (1.0 - core_layer * 0.08);
-                    float fluff_layer = max_shell * smoothstep(0.025, 0.18, max_density) * (1.0 - core_layer * 0.24);
-                    float veil_layer = smoothstep(0.035, 0.15, max_shape) * (1.0 - smoothstep(0.44, 0.76, max_shape));
-                    float coverage_floor = smoothstep(0.18 - edge_width, 0.56 + edge_width, max_shape) * mix(0.00, 0.70, smoothstep(0.05, 0.30, max_density));
-                    float surface_alpha = smoothstep(0.32, 0.86, surface_score) * mix(0.28, 0.88, core_layer);
-                    float optical_alpha = 1.0 - exp(-(optical_path * 1.72 + path_body * 0.96) * cloud_strength);
-                    float core_alpha_resolved = core_layer * 0.982 + smoothstep(0.78, 1.0, core_layer) * 0.012;
-                    float billow_alpha = billow_layer * mix(0.62, 0.90, smoothstep(0.20, 0.68, surface_score));
-                    float fluff_alpha = fluff_layer * 0.68;
-                    float veil_alpha = veil_layer * 0.14;
-                    float opaque_body_floor = smoothstep(0.055, 0.20, max_density) * smoothstep(0.08, 0.30, max_shape) * (0.82 + 0.15 * smoothstep(0.42, 1.10, body_presence));
-                    float resolved_detail = detail_mix / max(volume_alpha, 0.001);
-                    volume_color = mix(volume_color, surface_color * (0.88 + surface_crisp * 0.22), surface_weight * 0.28);
-                    volume_color = mix(volume_color, volume_color * (0.90 + resolved_detail * 0.20), smoothstep(0.30, 0.76, max_shape));
-                    float layer_alpha = 1.0
-                        - (1.0 - core_alpha_resolved)
-                        * (1.0 - billow_alpha)
-                        * (1.0 - fluff_alpha)
-                        * (1.0 - veil_alpha);
-                    layer_alpha = clamp(layer_alpha, 0.0, 0.992);
-                    float resolved_alpha = max(max(volume_alpha * 0.88, optical_alpha), max(opaque_body_floor, max(coverage_floor, max(surface_alpha, layer_alpha))));
-                    float strength_alpha = smoothstep(0.02, 0.86, cloud_strength);
-                    volume_alpha = clamp(resolved_alpha * strength_alpha, 0.0, 0.992);
-                }
-
-                sun_occluder = max(volume_alpha * 1.05, inside_mist * 0.96);
-            }
-
-            void merge_cloud_layer(
-                inout vec3 cloud_color,
-                inout float cloud_alpha,
-                vec3 layer_color,
-                float layer_alpha
-            ) {
-                layer_alpha = clamp(layer_alpha, 0.0, 0.995);
-                if (layer_alpha <= 0.0005) {
-                    return;
-                }
-                if (cloud_alpha <= 0.0005) {
-                    cloud_color = layer_color;
-                    cloud_alpha = layer_alpha;
-                    return;
-                }
-
-                float overlap = clamp(cloud_alpha * layer_alpha, 0.0, 1.0);
-                float union_alpha = 1.0 - (1.0 - cloud_alpha) * (1.0 - layer_alpha);
-                float shared_body = overlap * smoothstep(0.18, 0.82, max(cloud_alpha, layer_alpha));
-                union_alpha = max(union_alpha, clamp(max(cloud_alpha, layer_alpha) + shared_body * 0.18, 0.0, 0.995));
-                vec3 shared_color = mix((cloud_color + layer_color) * 0.5, vec3(0.94, 0.95, 0.92), shared_body * 0.20);
-                vec3 merged_layer_color = mix(layer_color, shared_color, overlap * 0.62);
-                float old_weight = cloud_alpha;
-                float new_weight = layer_alpha * (1.0 - cloud_alpha * 0.30);
-                cloud_color = (cloud_color * old_weight + merged_layer_color * new_weight) / max(old_weight + new_weight, 0.001);
-                cloud_alpha = clamp(union_alpha, 0.0, 0.995);
-            }
-
-            float add_cloud_mass(float cloud_mass, float layer_mass) {
-                layer_mass = clamp(layer_mass, 0.0, 2.0);
-                return min(cloud_mass + layer_mass * (1.0 - cloud_mass * 0.10), 2.60);
-            }
-
-            float cloud_instance_density_at(vec3 sample_pos, vec3 center, vec3 radii, float seed, float strength, float time) {
-                if (strength <= 0.010) {
-                    return 0.0;
-                }
-
-                vec3 local = (sample_pos - center) / radii;
-                float radius2 = dot(local, local);
-                if (radius2 > 2.08) {
-                    return 0.0;
-                }
-
-                vec3 flowed = volume_cloud_flow(local, time, seed);
-                float vertical = smoothstep(-1.10, -0.78, local.y) * (1.0 - smoothstep(0.82, 1.12, local.y));
-                float envelope = (1.0 - smoothstep(0.58, 1.72, radius2)) * vertical;
-                if (envelope <= 0.006) {
-                    return 0.0;
-                }
-
-                vec3 winded = flowed + vec3(time * 0.030, seed * 0.011, -time * 0.024);
-                float macro = fbm_fast(winded.xz * 1.70 + vec2(seed * 0.019, time * 0.050 + winded.y * 1.15));
-                float lift = fbm_fast(winded.xy * 3.10 + vec2(-time * 0.075 + winded.z * 0.7, seed * 0.027));
-                float billow = value_noise3(winded * 4.70 + vec3(2.1, time * 0.10, seed * 0.021));
-                float foam = value_noise3(winded * 9.60 + vec3(8.4, time * 0.17, seed * 0.023));
-                float lace = value_noise3(winded * 19.0 + vec3(seed * 0.017, time * 0.18, 2.3));
-                float edge = smoothstep(0.44, 1.58, radius2);
-                float clump = smoothstep(0.34, 0.82, macro * 0.42 + billow * 0.34 + foam * 0.24 + envelope * 0.18);
-                float cloud_weather = envelope * (0.30 + macro * 0.26 + billow * 0.18 + clump * 0.38);
-                float density = cloud_weather
-                    + (lift - 0.47) * envelope * 0.22
-                    + (foam - 0.45) * envelope * 0.22
-                    + (lace - 0.50) * envelope * 0.055
-                    + max(0.0, clump - 0.42) * envelope * 0.34;
-                density -= edge * envelope * max(0.0, 0.74 - billow) * 0.92;
-                density -= edge * envelope * max(0.0, 0.58 - foam) * 0.56;
-                density -= edge * envelope * max(0.0, 0.62 - clump) * 0.42;
-                density -= edge * envelope * max(0.0, 0.50 - lace) * 0.18;
-                density = smoothstep(0.02, 0.76, density) * vertical * (0.48 + envelope * 0.52);
-                density *= 0.74 + foam * 0.22 + lace * 0.08;
-                return clamp(density * strength * 1.55, 0.0, 1.58);
-            }
-
-            float cloud_instance_shadow_mass_at(vec3 sample_pos, vec3 center, vec3 radii, float seed, float strength, float time) {
-                if (strength <= 0.010) {
-                    return 0.0;
-                }
-
-                vec3 local = (sample_pos - center) / radii;
-                float radius2 = dot(local, local);
-                if (radius2 > 1.82) {
-                    return 0.0;
-                }
-
-                vec3 flowed = volume_cloud_flow(local, time, seed);
-                float shape = volume_cloud_shadow_shape(flowed, time, seed);
-                float radius_fade = 1.0 - smoothstep(1.28, 1.82, radius2);
-                float body = smoothstep(0.16, 0.50, shape);
-                return clamp((shape * 0.95 + body * 0.55) * strength * radius_fade, 0.0, 1.65);
-            }
-
-            float merged_cloud_density_at(
-                vec3 sample_pos,
-                float time,
-                float base_seed,
-                vec3 cloud_center,
-                vec3 main_radii,
-                float main_strength,
-                vec3 left_center,
-                vec3 left_radii,
-                float left_strength,
-                vec3 left_bridge_center,
-                vec3 left_bridge_radii,
-                float left_bridge_strength,
-                vec3 right_center,
-                vec3 right_radii,
-                float right_strength,
-                vec3 bridge_center,
-                vec3 bridge_radii,
-                float bridge_strength,
-                vec3 high_center,
-                vec3 high_radii,
-                float high_strength,
-                vec3 newborn_center,
-                vec3 newborn_radii,
-                float newborn_strength,
-                vec3 seedling_center,
-                vec3 seedling_radii,
-                float seedling_strength,
-                vec3 wake_center,
-                vec3 wake_radii,
-                float wake_strength
-            ) {
-                float mass = 0.0;
-                mass = add_cloud_mass(mass, cloud_instance_density_at(sample_pos, cloud_center, main_radii, base_seed, main_strength, time));
-                mass = add_cloud_mass(mass, cloud_instance_density_at(sample_pos, left_center, left_radii, base_seed + 19.7, left_strength, time));
-                mass = add_cloud_mass(mass, cloud_instance_density_at(sample_pos, left_bridge_center, left_bridge_radii, base_seed + 27.9, left_bridge_strength, time));
-                mass = add_cloud_mass(mass, cloud_instance_density_at(sample_pos, right_center, right_radii, base_seed + 37.3, right_strength, time));
-                mass = add_cloud_mass(mass, cloud_instance_density_at(sample_pos, bridge_center, bridge_radii, base_seed + 43.5, bridge_strength, time));
-                mass = add_cloud_mass(mass, cloud_instance_density_at(sample_pos, high_center, high_radii, base_seed + 61.1, high_strength, time));
-                mass = add_cloud_mass(mass, cloud_instance_density_at(sample_pos, newborn_center, newborn_radii, base_seed + 91.9, newborn_strength, time));
-                mass = add_cloud_mass(mass, cloud_instance_density_at(sample_pos, seedling_center, seedling_radii, base_seed + 123.7, seedling_strength, time));
-                mass = add_cloud_mass(mass, cloud_instance_density_at(sample_pos, wake_center, wake_radii, base_seed + 151.2, wake_strength, time));
-                return mass;
-            }
-
-            float merged_cloud_shadow_mass_at(
-                vec3 sample_pos,
-                float time,
-                float base_seed,
-                vec3 cloud_center,
-                vec3 main_radii,
-                float main_strength,
-                vec3 left_center,
-                vec3 left_radii,
-                float left_strength,
-                vec3 left_bridge_center,
-                vec3 left_bridge_radii,
-                float left_bridge_strength,
-                vec3 right_center,
-                vec3 right_radii,
-                float right_strength,
-                vec3 bridge_center,
-                vec3 bridge_radii,
-                float bridge_strength,
-                vec3 high_center,
-                vec3 high_radii,
-                float high_strength,
-                vec3 newborn_center,
-                vec3 newborn_radii,
-                float newborn_strength,
-                vec3 seedling_center,
-                vec3 seedling_radii,
-                float seedling_strength,
-                vec3 wake_center,
-                vec3 wake_radii,
-                float wake_strength
-            ) {
-                float mass = 0.0;
-                mass = add_cloud_mass(mass, cloud_instance_shadow_mass_at(sample_pos, cloud_center, main_radii, base_seed, main_strength, time));
-                mass = add_cloud_mass(mass, cloud_instance_shadow_mass_at(sample_pos, left_center, left_radii, base_seed + 19.7, left_strength, time));
-                mass = add_cloud_mass(mass, cloud_instance_shadow_mass_at(sample_pos, left_bridge_center, left_bridge_radii, base_seed + 27.9, left_bridge_strength, time));
-                mass = add_cloud_mass(mass, cloud_instance_shadow_mass_at(sample_pos, right_center, right_radii, base_seed + 37.3, right_strength, time));
-                mass = add_cloud_mass(mass, cloud_instance_shadow_mass_at(sample_pos, bridge_center, bridge_radii, base_seed + 43.5, bridge_strength, time));
-                mass = add_cloud_mass(mass, cloud_instance_shadow_mass_at(sample_pos, high_center, high_radii, base_seed + 61.1, high_strength, time));
-                mass = add_cloud_mass(mass, cloud_instance_shadow_mass_at(sample_pos, newborn_center, newborn_radii, base_seed + 91.9, newborn_strength, time));
-                mass = add_cloud_mass(mass, cloud_instance_shadow_mass_at(sample_pos, seedling_center, seedling_radii, base_seed + 123.7, seedling_strength, time));
-                mass = add_cloud_mass(mass, cloud_instance_shadow_mass_at(sample_pos, wake_center, wake_radii, base_seed + 151.2, wake_strength, time));
-                return mass;
-            }
-
-            vec3 merged_cloud_surface_normal(vec3 sample_pos, vec3 cluster_center, vec3 cluster_radii, float time, float base_seed) {
-                vec3 local = (sample_pos - cluster_center) / cluster_radii;
-                vec3 broad = normalize(vec3(local.x / cluster_radii.x, local.y / cluster_radii.y, local.z / cluster_radii.z) + vec3(0.0, 0.00008, 0.0));
-                vec3 detail = normalize(vec3(
-                    value_noise(sample_pos.yz * 0.010 + vec2(time * 0.09, base_seed * 0.013)) - 0.5,
-                    value_noise(sample_pos.xz * 0.009 + vec2(-time * 0.08, base_seed * 0.017)) - 0.5,
-                    value_noise(sample_pos.xy * 0.010 + vec2(time * 0.10, base_seed * 0.019)) - 0.5
-                ));
-                return normalize(broad * 0.66 + detail * 0.34);
-            }
-
-            void render_merged_cloud_field(
-                vec3 cluster_center,
-                vec3 cluster_radii,
-                vec3 cloud_center,
-                vec3 main_radii,
-                float main_strength,
-                vec3 left_center,
-                vec3 left_radii,
-                float left_strength,
-                vec3 left_bridge_center,
-                vec3 left_bridge_radii,
-                float left_bridge_strength,
-                vec3 right_center,
-                vec3 right_radii,
-                float right_strength,
-                vec3 bridge_center,
-                vec3 bridge_radii,
-                float bridge_strength,
-                vec3 high_center,
-                vec3 high_radii,
-                float high_strength,
-                vec3 newborn_center,
-                vec3 newborn_radii,
-                float newborn_strength,
-                vec3 seedling_center,
-                vec3 seedling_radii,
-                float seedling_strength,
-                vec3 wake_center,
-                vec3 wake_radii,
-                float wake_strength,
-                float base_seed,
-                vec3 camera_position,
-                vec3 ray,
-                vec3 sun,
-                float time,
-                out vec3 volume_color,
-                out float volume_alpha,
-                out float inside_mist,
-                out float sun_occluder
-            ) {
-                volume_color = vec3(0.0);
-                volume_alpha = 0.0;
-                inside_mist = 0.0;
-                sun_occluder = 0.0;
-
-                float camera_mass = merged_cloud_density_at(camera_position, time, base_seed, cloud_center, main_radii, main_strength, left_center, left_radii, left_strength, left_bridge_center, left_bridge_radii, left_bridge_strength, right_center, right_radii, right_strength, bridge_center, bridge_radii, bridge_strength, high_center, high_radii, high_strength, newborn_center, newborn_radii, newborn_strength, seedling_center, seedling_radii, seedling_strength, wake_center, wake_radii, wake_strength);
-                inside_mist = clamp(smoothstep(0.16, 0.70, camera_mass) * 0.97, 0.0, 0.97);
-
-                float volume_t0 = 0.0;
-                float volume_t1 = 0.0;
-                if (!ray_ellipsoid_interval(camera_position, ray, cluster_center, cluster_radii, volume_t0, volume_t1)) {
-                    sun_occluder = inside_mist * 0.96;
-                    return;
-                }
-
-                float start_t = max(volume_t0, 0.0);
-                float end_t = volume_t1;
-                float span = max(end_t - start_t, 0.0);
-                float step_len = span / 12.0;
-                float march_jitter = 0.0;
-                vec3 accum = vec3(0.0);
-                float max_density = 0.0;
-                float optical_mass = 0.0;
-
-                for (int i = 0; i < 12; i++) {
-                    float t = start_t + (float(i) + 0.5 + march_jitter) * step_len;
-                    vec3 sample_pos = camera_position + ray * t;
-                    float density = merged_cloud_density_at(sample_pos, time, base_seed, cloud_center, main_radii, main_strength, left_center, left_radii, left_strength, left_bridge_center, left_bridge_radii, left_bridge_strength, right_center, right_radii, right_strength, bridge_center, bridge_radii, bridge_strength, high_center, high_radii, high_strength, newborn_center, newborn_radii, newborn_strength, seedling_center, seedling_radii, seedling_strength, wake_center, wake_radii, wake_strength);
-                    float shell = smoothstep(0.05, 0.28, density) * (1.0 - smoothstep(0.84, 1.65, density));
-                    vec3 noise_pos = sample_pos * 0.0010 + vec3(time * 0.018, base_seed * 0.013, -time * 0.012);
-                    float surface_noise = fbm_fast(sample_pos.xz * 0.0078 + vec2(time * 0.16 + base_seed * 0.017, sample_pos.y * 0.0045));
-                    float fibre_noise = fbm_fast(sample_pos.xy * 0.0110 + vec2(-time * 0.13, base_seed * 0.031 + sample_pos.z * 0.0035));
-                    float pearl_noise = value_noise3(noise_pos * 18.0 + vec3(base_seed * 0.031, time * 0.21, 2.7));
-                    float pin_noise = value_noise(sample_pos.xz * 0.030 + vec2(-time * 0.30, base_seed * 0.047 + sample_pos.y * 0.005));
-                    float foam_detail = clamp(surface_noise * 0.38 + fibre_noise * 0.34 + pearl_noise * 0.28, 0.0, 1.0);
-                    density = max(0.0, density
-                        + (surface_noise - 0.50) * shell * 0.085
-                        + (fibre_noise - 0.50) * shell * 0.065
-                        + (pearl_noise - 0.48) * shell * 0.060
-                        - max(0.0, 0.42 - pin_noise) * shell * 0.070);
-                    if (density <= 0.010) {
-                        continue;
-                    }
-
-                    vec3 local_cluster = (sample_pos - cluster_center) / cluster_radii;
-                    float height_light = smoothstep(-0.62, 0.74, local_cluster.y);
-                    float core = smoothstep(0.42, 1.08, density);
-                    max_density = max(max_density, density);
-                    optical_mass += density * step_len * 0.0018;
-
-                    vec3 shadow_near_local = (sample_pos + sun * 300.0 - cluster_center) / cluster_radii;
-                    vec3 shadow_mid_local = (sample_pos + sun * 720.0 - cluster_center) / cluster_radii;
-                    vec3 shadow_far_local = (sample_pos + sun * 1260.0 - cluster_center) / cluster_radii;
-                    float shadow_near = 1.0 - smoothstep(0.60, 1.22, dot(shadow_near_local, shadow_near_local));
-                    float shadow_mid = 1.0 - smoothstep(0.54, 1.14, dot(shadow_mid_local, shadow_mid_local));
-                    float shadow_far = 1.0 - smoothstep(0.48, 1.06, dot(shadow_far_local, shadow_far_local));
-                    float shadow_texture = fbm_fast(sample_pos.xz * 0.0028 + vec2(time * 0.055 + base_seed * 0.013, sample_pos.y * 0.0019));
-                    float light_depth = (shadow_near * 0.68 + shadow_mid * 0.42 + shadow_far * 0.22) * (0.64 + shadow_texture * 0.38) + density * 0.38;
-                    float light_transmittance = clamp(exp(-light_depth * 1.10), 0.12, 1.0);
-
-                    float broad_sun = clamp(0.52 + sun.y * 0.30 + dot(normalize(cluster_center - sample_pos), sun) * 0.12, 0.18, 0.86);
-                    float light_face = clamp(broad_sun + (foam_detail - 0.5) * shell * 0.055, 0.14, 0.88);
-                    float dark_face = smoothstep(0.04, -0.58, local_cluster.y) * (1.0 - light_transmittance);
-                    float underside = smoothstep(-0.02, -0.66, local_cluster.y) * (1.0 - clamp(sun.y, 0.0, 1.0) * 0.35);
-
-                    vec3 cool_shadow = mix(vec3(0.55, 0.60, 0.68), vec3(0.82, 0.85, 0.88), height_light);
-                    vec3 ambient_color = cool_shadow * (0.70 + height_light * 0.20 + shell * 0.035);
-                    vec3 direct_color = vec3(1.04, 1.03, 0.99) * (light_face * light_transmittance * 0.18);
-                    vec3 bounce_color = vec3(0.85, 0.92, 1.0) * (0.30 + height_light * 0.14 + foam_detail * shell * 0.025) * (1.0 - underside * 0.24);
-                    vec3 scatter_color = vec3(0.96, 0.93, 0.84) * (shell * light_face * 0.0008);
-                    vec3 sample_color = ambient_color + direct_color + bounce_color + scatter_color;
-                    sample_color = mix(sample_color, vec3(0.93, 0.94, 0.92), core * 0.020 + light_face * 0.010);
-                    sample_color *= 1.0 - (1.0 - light_transmittance) * (0.46 + dark_face * 0.20) * smoothstep(0.12, 1.02, density);
-                    sample_color *= 1.0 - underside * core * 0.22;
-                    sample_color *= 0.86 + foam_detail * 0.12 + fibre_noise * shell * 0.060 + pin_noise * shell * 0.030;
-                    sample_color = max(sample_color, vec3(0.20, 0.21, 0.23));
-
-                    float extinction = density * 7.75 + core * 1.18 + shell * 0.56;
-                    float sample_alpha = (1.0 - exp(-extinction * step_len * 0.00162)) * (1.0 - volume_alpha);
-                    accum += sample_color * sample_alpha;
-                    volume_alpha += sample_alpha;
-                    if (volume_alpha > 0.991) {
-                        break;
-                    }
-                }
-
-                if (volume_alpha > 0.0005) {
-                    volume_color = accum / max(volume_alpha, 0.001);
-                }
-
-                float optical_alpha = 1.0 - exp(-optical_mass * 2.05);
-                float mid_body_floor = smoothstep(0.16, 0.48, max_density) * 0.25;
-                float core_body_floor = smoothstep(0.50, 1.10, max_density) * 0.82;
-                volume_alpha = clamp(max(volume_alpha, max(optical_alpha, max(mid_body_floor, core_body_floor))), 0.0, 0.995);
-                volume_color = mix(volume_color, vec3(0.94, 0.95, 0.92), smoothstep(0.90, 2.10, optical_mass) * 0.08);
-                sun_occluder = max(volume_alpha * 1.04, inside_mist * 0.96);
-            }
-
-            void main() {
-                vec2 resolution = max(pc.resolution_weather.xy, vec2(1.0));
-                vec2 uv = gl_FragCoord.xy / resolution;
-                float aspect = resolution.x / resolution.y;
-                vec3 forward = normalize(pc.camera_forward_tan_x.xyz);
-                vec3 right = normalize(pc.camera_right_tan_y.xyz);
-                vec3 up = normalize(pc.camera_up_time.xyz);
-                float tan_x = pc.camera_forward_tan_x.w;
-                float tan_y = pc.camera_right_tan_y.w;
-                float time = pc.camera_up_time.w;
-                vec3 camera_position = pc.camera_position_seed.xyz;
-                vec3 sun = normalize(pc.sun_direction_radius.xyz);
-
-                vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-                vec3 ray = normalize(forward + right * ndc.x * tan_x + up * ndc.y * tan_y);
-                float horizon = smoothstep(-0.10, 0.42, ray.y);
-                float zenith = smoothstep(-0.02, 0.88, ray.y);
-                vec3 horizon_blue = vec3(0.30, 0.58, 1.0);
-                vec3 upper_blue = vec3(0.018, 0.18, 0.86);
-                vec3 color = mix(horizon_blue, upper_blue, pow(zenith, 0.62));
-                color = mix(color, vec3(0.96, 0.70, 0.42), (1.0 - horizon) * 0.018);
-
-                float sun_view_z = max(dot(sun, forward), 0.001);
-                vec2 sun_screen = vec2(
-                    0.5 + dot(sun, right) / (sun_view_z * tan_x * 2.0),
-                    0.5 - dot(sun, up) / (sun_view_z * tan_y * 2.0)
-                );
-                vec2 sun_delta = vec2((uv.x - sun_screen.x) * aspect, uv.y - sun_screen.y);
-                float sun_distance = length(sun_delta);
-                float sun_radius = clamp(pc.sun_direction_radius.w * 2.15 / max(2.0 * atan(tan_y), 0.01), 0.013, 0.044);
-                float sun_disc = 1.0 - smoothstep(sun_radius * 0.78, sun_radius * 1.22, sun_distance);
-                float sun_glow = exp(-sun_distance * 8.5);
-                color += vec3(1.0, 0.78, 0.45) * exp(-sun_distance * 3.2) * 0.14;
-
-                vec3 cloud_center = vec3(
-                    sin(pc.camera_position_seed.w * 12.9898) * 420.0 + sin(time * 0.025) * 80.0,
-                    760.0,
-                    3800.0
-                );
-                float split_cycle = 0.5 + 0.5 * sin(time * 0.11 + pc.camera_position_seed.w * 0.071);
-                float split_open = smoothstep(0.18, 0.86, split_cycle);
-                float merge_open = 1.0 - smoothstep(0.70, 1.0, abs(split_cycle * 2.0 - 1.0));
-                float detach_open = smoothstep(0.48, 0.92, split_cycle);
-
-                vec3 main_radii = vec3(920.0, 560.0, 680.0);
-                vec3 left_center = cloud_center + vec3(-960.0 - split_open * 620.0 + sin(time * 0.047) * 130.0, 40.0 + sin(time * 0.033) * 100.0, 300.0 + cos(time * 0.041) * 190.0);
-                vec3 right_center = cloud_center + vec3(980.0 + split_open * 650.0 + cos(time * 0.039) * 140.0, -35.0 + cos(time * 0.044) * 95.0, 620.0 + sin(time * 0.050) * 210.0);
-                vec3 high_center = cloud_center + vec3(110.0 + sin(time * 0.061) * 300.0, 455.0 + split_open * 210.0, -310.0 + cos(time * 0.052) * 240.0);
-                vec3 newborn_center = mix(cloud_center + vec3(360.0, 80.0, 120.0), right_center + vec3(430.0, 110.0, -180.0), split_open);
-                vec3 bridge_center = mix(cloud_center, right_center, 0.48) + vec3(0.0, 45.0 + sin(time * 0.08) * 35.0, -90.0);
-                vec3 left_bridge_center = mix(cloud_center, left_center, 0.45) + vec3(0.0, 30.0 + cos(time * 0.075) * 35.0, 40.0);
-                vec3 seedling_center = newborn_center + vec3(520.0 + detach_open * 520.0 + sin(time * 0.16) * 90.0, 140.0 + sin(time * 0.11) * 80.0, -310.0 + cos(time * 0.13) * 130.0);
-                vec3 wake_center = left_center + vec3(-520.0 - detach_open * 360.0, 130.0 + cos(time * 0.12) * 70.0, -260.0 + sin(time * 0.10) * 150.0);
-
-                vec3 left_radii = vec3(560.0, 350.0, 460.0) * (0.88 + merge_open * 0.14);
-                vec3 right_radii = vec3(590.0, 365.0, 480.0) * (0.86 + split_open * 0.13);
-                vec3 high_radii = vec3(600.0, 260.0, 390.0) * (0.84 + split_open * 0.16);
-                vec3 newborn_radii = vec3(370.0, 210.0, 285.0) * (0.72 + split_open * 0.30);
-                vec3 bridge_radii = vec3(430.0, 170.0, 250.0) * (0.48 + merge_open * 0.34);
-                vec3 left_bridge_radii = vec3(380.0, 165.0, 245.0) * (0.46 + merge_open * 0.32);
-                vec3 seedling_radii = vec3(310.0, 170.0, 235.0) * (0.62 + detach_open * 0.38);
-                vec3 wake_radii = vec3(360.0, 175.0, 270.0) * (0.58 + detach_open * 0.32);
-
-                float main_strength = 0.76 + merge_open * 0.08;
-                float left_strength = 0.82 + merge_open * 0.12;
-                float left_bridge_strength = merge_open * 0.38;
-                float right_strength = 0.84 + split_open * 0.12;
-                float bridge_strength = merge_open * 0.42;
-                float high_strength = 0.56 + split_open * 0.30;
-                float newborn_strength = split_open * 0.82;
-                float seedling_strength = detach_open * 0.72;
-                float wake_strength = detach_open * 0.56;
-                vec3 cluster_center = cloud_center + vec3(220.0, 120.0, 300.0);
-                vec3 cluster_radii = vec3(4380.0 + detach_open * 340.0, 1620.0, 2660.0);
-
-                vec3 cloud_union_color = vec3(0.0);
-                float cloud_union_alpha = 0.0;
-                float inside_mist = 0.0;
-                float sun_occluder = 0.0;
-                vec3 inside_color = vec3(0.91, 0.92, 0.88) + vec3(0.04, 0.045, 0.055) * smoothstep(-0.20, 0.55, ray.y);
-
-                render_merged_cloud_field(
-                    cluster_center,
-                    cluster_radii,
-                    cloud_center,
-                    main_radii,
-                    main_strength,
-                    left_center,
-                    left_radii,
-                    left_strength,
-                    left_bridge_center,
-                    left_bridge_radii,
-                    left_bridge_strength,
-                    right_center,
-                    right_radii,
-                    right_strength,
-                    bridge_center,
-                    bridge_radii,
-                    bridge_strength,
-                    high_center,
-                    high_radii,
-                    high_strength,
-                    newborn_center,
-                    newborn_radii,
-                    newborn_strength,
-                    seedling_center,
-                    seedling_radii,
-                    seedling_strength,
-                    wake_center,
-                    wake_radii,
-                    wake_strength,
-                    pc.camera_position_seed.w,
-                    camera_position,
-                    ray,
-                    sun,
-                    time,
-                    cloud_union_color,
-                    cloud_union_alpha,
-                    inside_mist,
-                    sun_occluder
-                );
-
-                color = mix(color, cloud_union_color, cloud_union_alpha);
-                color = mix(color, inside_color, inside_mist);
-                float sun_occlusion = 1.0 - sun_occluder * smoothstep(0.38, 0.0, sun_distance) * 0.98;
-                color += vec3(1.0, 0.92, 0.74) * sun_disc * sun_occlusion * 3.6;
-                color += vec3(1.0, 0.80, 0.48) * sun_glow * sun_occlusion * 0.18;
-                color = pow(aces(color), vec3(1.0 / 2.2));
-                out_color = vec4(color, 1.0);
-            }
-        "#,
+            t += step_length;
+        }
+
+        color = accumulated + background * transmittance;
+    }
+
+    color = aces(color);
+    color = pow(color, vec3(1.0 / 2.2));
+    out_color = vec4(saturate3(color), 1.0);
+}
+"#,
     }
 }
 
@@ -2163,35 +1651,28 @@ fn initial_gpu_camera_angles(seed: u64) -> (f32, f32) {
 }
 
 fn gpu_cloud_center_m(seed: u64, time_seconds: f32) -> [f32; 3] {
+    const CLOUD_LAYER_TARGET_HEIGHT_M: f32 = 2_650.0;
+    const CLOUD_LAYER_TARGET_DISTANCE_M: f32 = 7_400.0;
     [
-        (seed as f32 * 12.9898).sin() * 420.0 + (time_seconds * 0.025).sin() * 80.0,
-        760.0,
-        3800.0,
+        (seed as f32 * 12.9898).sin() * 1_250.0 + (time_seconds * 0.025).sin() * 260.0,
+        CLOUD_LAYER_TARGET_HEIGHT_M,
+        CLOUD_LAYER_TARGET_DISTANCE_M,
     ]
 }
 
 fn gpu_cloud_radii_m() -> [f32; 3] {
-    [1550.0, 760.0, 880.0]
+    [8_000.0, 1_700.0, 8_000.0]
 }
 
-fn cloud_proximity_label(camera: [f32; 3], center: [f32; 3], radii: [f32; 3]) -> String {
-    let delta = [
-        camera[0] - center[0],
-        camera[1] - center[1],
-        camera[2] - center[2],
-    ];
-    let center_distance = dot3(delta, delta).sqrt();
-    let local = [
-        delta[0] / radii[0].max(f32::EPSILON),
-        delta[1] / radii[1].max(f32::EPSILON),
-        delta[2] / radii[2].max(f32::EPSILON),
-    ];
-    let local_distance = dot3(local, local).sqrt();
-    if local_distance <= 1.0 {
-        "inside cloud".to_string()
+fn cloud_proximity_label(camera: [f32; 3], _center: [f32; 3], _radii: [f32; 3]) -> String {
+    const CLOUD_LAYER_BASE_M: f32 = 1_150.0;
+    const CLOUD_LAYER_TOP_M: f32 = 4_550.0;
+    if camera[1] < CLOUD_LAYER_BASE_M {
+        format!("{:.0}m below cloud layer", CLOUD_LAYER_BASE_M - camera[1])
+    } else if camera[1] > CLOUD_LAYER_TOP_M {
+        format!("{:.0}m above cloud layer", camera[1] - CLOUD_LAYER_TOP_M)
     } else {
-        let surface_distance = center_distance * (1.0 - 1.0 / local_distance);
-        format!("{:.0}m to cloud", surface_distance.max(0.0))
+        "inside cloud layer".to_string()
     }
 }
 
