@@ -688,13 +688,13 @@ layout(push_constant) uniform SkyPushConstants {
 } pc;
 
 const float PI = 3.14159265358979323846;
-const int PRIMARY_STEPS = 32;
-const int SHADOW_STEPS = 2;
+const int PRIMARY_STEPS = 24;
+const int SHADOW_STEPS = 1;
 const float CLOUD_BASE_M = 1150.0;
 const float CLOUD_TOP_M = 4550.0;
 const float CLOUD_LAYER_THICKNESS_M = CLOUD_TOP_M - CLOUD_BASE_M;
-const float CLOUD_MAX_DISTANCE_M = 52000.0;
-const float MIN_TRANSMITTANCE = 0.024;
+const float CLOUD_MAX_DISTANCE_M = 42000.0;
+const float MIN_TRANSMITTANCE = 0.032;
 
 float saturate(float value) {
     return clamp(value, 0.0, 1.0);
@@ -776,7 +776,7 @@ float fbm2(vec2 value) {
     float amplitude = 0.5;
     float norm = 0.0;
     mat2 octave = mat2(1.61, 1.08, -1.08, 1.61);
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 3; i++) {
         sum += value_noise2(value) * amplitude;
         norm += amplitude;
         value = octave * value + vec2(13.17, 7.31);
@@ -789,7 +789,7 @@ float fbm3(vec3 value) {
     float sum = 0.0;
     float amplitude = 0.5;
     float norm = 0.0;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 3; i++) {
         sum += value_noise3(value) * amplitude;
         norm += amplitude;
         value = value * 2.03 + vec3(17.13, 7.71, 31.41);
@@ -911,6 +911,22 @@ float cloud_coverage_field(vec2 world_xz, float time_seconds, float seed) {
     return smoothstep(0.0, 1.0, mask);
 }
 
+float cloud_coverage_field_fast(vec2 world_xz, float time_seconds, float seed) {
+    vec2 wind = wind_offset_m(time_seconds, seed);
+    vec2 seed_offset = vec2(hash11(seed + 10.0), hash11(seed + 37.0)) * 10000.0;
+    vec2 p = (world_xz + wind + seed_offset) * 0.000085;
+
+    float large_weather = value_noise2(p * 0.72 + vec2(seed * 0.011, -seed * 0.017));
+    float street = value_noise2(vec2(p.x * 2.20 + p.y * 0.42, p.y * 0.66 - p.x * 0.19));
+    float local_variation = value_noise2(p * 3.10 + vec2(11.0, seed * 0.013));
+
+    float field = large_weather * 0.66 + street * 0.22 + local_variation * 0.12;
+    float requested_coverage = saturate(pc.resolution_weather.z);
+    float threshold = mix(0.60, 0.36, requested_coverage);
+    float mask = remap01(field, threshold, 0.96);
+    return smoothstep(0.0, 1.0, mask);
+}
+
 float raw_cloud_density(vec3 world_position) {
     float h = cloud_height01(world_position);
     if (h <= 0.0 || h >= 1.0) {
@@ -923,14 +939,14 @@ float raw_cloud_density(vec3 world_position) {
 
     vec2 wind = wind_offset_m(time_seconds, seed);
     float coverage_mask = cloud_coverage_field(world_position.xz, time_seconds, seed);
-    if (coverage_mask <= 0.001) {
+    if (coverage_mask <= 0.003) {
         return 0.0;
     }
 
     float profile = vertical_density_profile(h);
     vec2 low_warp = vec2(
-        fbm2(world_position.xz * 0.00019 + vec2(seed * 0.017, time_seconds * 0.012)),
-        fbm2(world_position.zx * 0.00022 + vec2(-time_seconds * 0.014, seed * 0.023))
+        value_noise2(world_position.xz * 0.00019 + vec2(seed * 0.017, time_seconds * 0.012)),
+        value_noise2(world_position.zx * 0.00022 + vec2(-time_seconds * 0.014, seed * 0.023))
     ) - 0.5;
 
     vec3 q = vec3(
@@ -944,7 +960,7 @@ float raw_cloud_density(vec3 world_position) {
 
     float billow_low = fbm3(q * 2.10 + vec3(3.7, time_seconds * 0.018, seed * 0.011));
     float billow_mid = fbm3(q * 4.60 + vec3(seed * 0.029, -time_seconds * 0.026, 5.1));
-    float fine_noise = fbm3(q * 9.80 + vec3(-time_seconds * 0.044, 8.2, seed * 0.031));
+    float fine_noise = value_noise3(q * 9.80 + vec3(-time_seconds * 0.044, 8.2, seed * 0.031));
 
     float primary_shape = coverage_mask * profile;
     primary_shape += (billow_low - 0.46) * 0.42 * profile;
@@ -957,9 +973,9 @@ float raw_cloud_density(vec3 world_position) {
     float edge = 1.0 - smoothstep(0.24, 0.82, density);
     float top_evaporation = smoothstep(0.56, 0.98, h);
     float low_cells = worley3(q * 3.55 + vec3(seed * 0.031, 2.0, time_seconds * 0.013));
-    float high_cells = worley3(q * 8.20 + vec3(8.0, seed * 0.043, -time_seconds * 0.031));
+    float high_cells = value_noise3(q * 8.20 + vec3(8.0, seed * 0.043, -time_seconds * 0.031));
     float cellular_erosion = smoothstep(0.18, 0.72, low_cells) * 0.34;
-    cellular_erosion += smoothstep(0.12, 0.64, high_cells) * mix(0.16, 0.31, top_evaporation);
+    cellular_erosion += smoothstep(0.38, 0.86, high_cells) * mix(0.12, 0.24, top_evaporation);
     density -= cellular_erosion * edge;
 
     // Flat, heavy underside plus soft high-detail rim texture.
@@ -980,8 +996,8 @@ float shadow_cloud_density(vec3 world_position) {
 
     float time_seconds = pc.camera_up_time.w;
     float seed = pc.camera_position_seed.w;
-    float coverage_mask = cloud_coverage_field(world_position.xz, time_seconds, seed);
-    if (coverage_mask <= 0.001) {
+    float coverage_mask = cloud_coverage_field_fast(world_position.xz, time_seconds, seed);
+    if (coverage_mask <= 0.006) {
         return 0.0;
     }
 
@@ -1004,7 +1020,7 @@ float cloud_shadow_transmittance(vec3 world_position, vec3 sun_direction) {
         return 1.0;
     }
 
-    float max_distance = min(t1, 12500.0);
+    float max_distance = min(t1, 8500.0);
     float step_length = max_distance / float(SHADOW_STEPS);
     float t = step_length * 0.62;
     float optical_depth = 0.0;
@@ -1107,39 +1123,48 @@ void main() {
     float t1;
     if (ray_cloud_layer_interval(origin, ray_direction, t0, t1)) {
         float segment = max(t1 - t0, 1.0);
-        float step_length = segment / float(PRIMARY_STEPS);
-        float jitter = interleaved_gradient_noise(gl_FragCoord.xy, pc.camera_up_time.w);
-        float t = t0 + step_length * jitter;
+        float coarse_t_a = t0 + segment * 0.28;
+        float coarse_t_b = t0 + segment * 0.68;
+        float coarse_coverage = max(
+            cloud_coverage_field_fast((origin + ray_direction * coarse_t_a).xz, pc.camera_up_time.w, pc.camera_position_seed.w),
+            cloud_coverage_field_fast((origin + ray_direction * coarse_t_b).xz, pc.camera_up_time.w, pc.camera_position_seed.w)
+        );
 
-        vec3 accumulated = vec3(0.0);
-        float transmittance = 1.0;
-        float density_setting = saturate(pc.resolution_weather.w);
-        float extinction = mix(0.00042, 0.00105, density_setting);
+        if (coarse_coverage > 0.006) {
+            float step_length = segment / float(PRIMARY_STEPS);
+            float jitter = interleaved_gradient_noise(gl_FragCoord.xy, pc.camera_up_time.w);
+            float t = t0 + step_length * jitter;
 
-        for (int i = 0; i < PRIMARY_STEPS; i++) {
-            if (t > t1) {
-                break;
-            }
+            vec3 accumulated = vec3(0.0);
+            float transmittance = 1.0;
+            float density_setting = saturate(pc.resolution_weather.w);
+            float extinction = mix(0.00042, 0.00105, density_setting);
 
-            vec3 p = origin + ray_direction * t;
-            float density = raw_cloud_density(p);
-
-            if (density > 0.0015) {
-                float optical_depth = density * extinction * step_length;
-                float alpha = 1.0 - exp(-optical_depth);
-                vec3 lit_cloud = cloud_lighting(p, -ray_direction, sun_direction, density, t);
-                accumulated += transmittance * alpha * lit_cloud;
-                transmittance *= exp(-optical_depth);
-
-                if (transmittance < MIN_TRANSMITTANCE) {
+            for (int i = 0; i < PRIMARY_STEPS; i++) {
+                if (t > t1) {
                     break;
                 }
+
+                vec3 p = origin + ray_direction * t;
+                float density = raw_cloud_density(p);
+
+                if (density > 0.0015) {
+                    float optical_depth = density * extinction * step_length;
+                    float alpha = 1.0 - exp(-optical_depth);
+                    vec3 lit_cloud = cloud_lighting(p, -ray_direction, sun_direction, density, t);
+                    accumulated += transmittance * alpha * lit_cloud;
+                    transmittance *= exp(-optical_depth);
+
+                    if (transmittance < MIN_TRANSMITTANCE) {
+                        break;
+                    }
+                }
+
+                t += step_length;
             }
 
-            t += step_length;
+            color = accumulated + background * transmittance;
         }
-
-        color = accumulated + background * transmittance;
     }
 
     color = aces(color);
